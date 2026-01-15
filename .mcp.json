@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aria": {
+      "command": "python3",
+      "args": ["/Users/adikol/Desktop/anthropic-quickstarts/aria-agent/run_mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "/Users/adikol/Desktop/anthropic-quickstarts/aria-agent"
+      }
+    }
+  }
+}
