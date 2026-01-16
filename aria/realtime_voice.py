@@ -353,7 +353,8 @@ class RealtimeVoiceClient:
             event: The event data.
         """
         event_type = event.get("type", "")
-        # DEBUG: Log all events to diagnose issues
+
+        # DEBUG: Log events (except frequent ones)
         if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
             print(f"[RealtimeVoice DEBUG] Event: {event_type}")
 
@@ -415,7 +416,6 @@ class RealtimeVoiceClient:
         elif event_type == "conversation.item.input_audio_transcription.failed":
             error = event.get("error", {})
             print(f"[RealtimeVoice] TRANSCRIPTION FAILED: {error}")
-            # This might happen if audio is empty or corrupted
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
@@ -893,32 +893,69 @@ class RealtimeConversationLoop:
 
 
 # Aria tool definitions for Realtime API
-# These map to the MCP server tools available in Aria
+# These use vision-guided execution for reliable action completion
 ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
-        "name": "click",
-        "description": "Click at screen coordinates. Use after seeing the screen to click on UI elements.",
+        "name": "look_at_screen",
+        "description": "Look at the user's screen and describe what you see. ALWAYS call this first when the user asks about their screen, what app is open, or before performing any visual task. This gives you vision of what's currently displayed.",
         "parameters": {
             "type": "object",
             "properties": {
-                "x": {"type": "integer", "description": "X coordinate on screen"},
-                "y": {"type": "integer", "description": "Y coordinate on screen"}
-            },
-            "required": ["x", "y"]
+                "focus": {
+                    "type": "string",
+                    "description": "Optional: what to focus on (e.g., 'the menu bar', 'any error messages', 'the browser tabs')"
+                }
+            }
         }
     },
     {
         "type": "function",
-        "name": "double_click",
-        "description": "Double-click at screen coordinates.",
+        "name": "execute_task",
+        "description": "Execute a high-level task using vision to plan and verify. This is the PREFERRED tool for most actions. Describe what you want to accomplish and the system will use vision to figure out how to do it. Examples: 'open a new Chrome window', 'click the File menu and select New', 'scroll down on this page'",
         "parameters": {
             "type": "object",
             "properties": {
-                "x": {"type": "integer", "description": "X coordinate on screen"},
-                "y": {"type": "integer", "description": "Y coordinate on screen"}
+                "task": {
+                    "type": "string",
+                    "description": "Description of what to accomplish (e.g., 'open a new Chrome window', 'click the submit button')"
+                }
             },
-            "required": ["x", "y"]
+            "required": ["task"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "click",
+        "description": "Click on a UI element by describing what to click. The system will use vision to find the element and click it. Do NOT guess coordinates - describe the target instead.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Description of what to click (e.g., 'the File menu', 'the blue Submit button', 'the search box')"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "open_menu_item",
+        "description": "Open a menu and click a menu item. Uses vision to find and click accurately.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "menu": {
+                    "type": "string",
+                    "description": "The menu to open (e.g., 'File', 'Edit', 'Chrome')"
+                },
+                "item": {
+                    "type": "string",
+                    "description": "The menu item to click (e.g., 'New Window', 'Copy', 'Preferences')"
+                }
+            },
+            "required": ["menu", "item"]
         }
     },
     {
