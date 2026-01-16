@@ -885,69 +885,32 @@ class RealtimeConversationLoop:
 
 
 # Aria tool definitions for Realtime API
-# These use vision-guided execution for reliable action completion
+# These map to the MCP server tools available in Aria
 ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
-        "name": "look_at_screen",
-        "description": "Look at the user's screen and describe what you see. ALWAYS call this first when the user asks about their screen, what app is open, or before performing any visual task. This gives you vision of what's currently displayed.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "focus": {
-                    "type": "string",
-                    "description": "Optional: what to focus on (e.g., 'the menu bar', 'any error messages', 'the browser tabs')"
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "name": "execute_task",
-        "description": "Execute a high-level task using vision to plan and verify. This is the PREFERRED tool for most actions. Describe what you want to accomplish and the system will use vision to figure out how to do it. Examples: 'open a new Chrome window', 'click the File menu and select New', 'scroll down on this page'",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "Description of what to accomplish (e.g., 'open a new Chrome window', 'click the submit button')"
-                }
-            },
-            "required": ["task"]
-        }
-    },
-    {
-        "type": "function",
         "name": "click",
-        "description": "Click on a UI element by describing what to click. The system will use vision to find the element and click it. Do NOT guess coordinates - describe the target instead.",
+        "description": "Click at screen coordinates. Use after seeing the screen to click on UI elements.",
         "parameters": {
             "type": "object",
             "properties": {
-                "target": {
-                    "type": "string",
-                    "description": "Description of what to click (e.g., 'the File menu', 'the blue Submit button', 'the search box')"
-                }
+                "x": {"type": "integer", "description": "X coordinate on screen"},
+                "y": {"type": "integer", "description": "Y coordinate on screen"}
             },
-            "required": ["target"]
+            "required": ["x", "y"]
         }
     },
     {
         "type": "function",
-        "name": "open_menu_item",
-        "description": "Open a menu and click a menu item. Uses vision to find and click accurately.",
+        "name": "double_click",
+        "description": "Double-click at screen coordinates.",
         "parameters": {
             "type": "object",
             "properties": {
-                "menu": {
-                    "type": "string",
-                    "description": "The menu to open (e.g., 'File', 'Edit', 'Chrome')"
-                },
-                "item": {
-                    "type": "string",
-                    "description": "The menu item to click (e.g., 'New Window', 'Copy', 'Preferences')"
-                }
+                "x": {"type": "integer", "description": "X coordinate on screen"},
+                "y": {"type": "integer", "description": "Y coordinate on screen"}
             },
-            "required": ["menu", "item"]
+            "required": ["x", "y"]
         }
     },
     {
