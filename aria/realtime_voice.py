@@ -898,8 +898,7 @@ ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional: what to focus on (e.g., 'the menu bar', 'any error messages', 'the browser tabs')"
                 }
-            },
-            "required": []
+            }
         }
     },
     {
