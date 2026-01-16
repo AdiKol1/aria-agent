@@ -354,12 +354,15 @@ Screen size: {width}x{height} pixels
 Look at this screenshot and tell me exactly what steps I should take to accomplish this task.
 Consider the current state of the screen - what app is open, what's visible, etc.
 
+IMPORTANT: For click actions, provide a clear TARGET DESCRIPTION - this is the most critical part!
+The system will use vision to find the element at execution time, so describe what to click clearly.
+
 Respond with a JSON object containing the steps:
 {{
     "current_state": "description of what's currently on screen",
     "can_proceed": true/false,
     "steps": [
-        {{"action": "click", "target": "description of what to click", "x": 100, "y": 200}},
+        {{"action": "click", "target": "clear description like: the plus button in the toolbar, the File menu, the red close button"}},
         {{"action": "type", "text": "text to type"}},
         {{"action": "hotkey", "keys": ["command", "n"]}},
         {{"action": "wait", "seconds": 0.5}}
@@ -367,8 +370,12 @@ Respond with a JSON object containing the steps:
     "expected_result": "what should be visible after completing these steps"
 }}
 
-Be specific about coordinates - look at the actual positions on screen.
-If the task cannot be done from the current screen state, explain why in current_state and set can_proceed to false.
+CRITICAL FOR CLICKS:
+- "target" must be a CLEAR, SPECIFIC description of the UI element
+- Examples: "the plus (+) button in the Calendar toolbar", "the File menu in the menu bar"
+- The system will use vision to find the exact location, so description quality matters!
+
+If the task cannot be done from the current screen state, explain why and set can_proceed to false.
 
 Respond with ONLY the JSON, no other text."""
 
@@ -404,8 +411,27 @@ Respond with ONLY the JSON, no other text."""
 
             try:
                 if action == "click":
-                    x, y = step.get("x", 0), step.get("y", 0)
-                    self.control.click(x, y)
+                    # Use vision-guided clicking with target description
+                    target = step.get("target", "")
+                    if target:
+                        # Re-capture screen and find element with vision
+                        element = self.find_element(target)
+                        if element:
+                            x, y = element["x"], element["y"]
+                            print(f"[ActionExecutor] Vision found '{target}' at ({x}, {y})")
+                            self.control.click(x, y)
+                        else:
+                            # Fallback to provided coordinates if vision fails
+                            x, y = step.get("x", 0), step.get("y", 0)
+                            print(f"[ActionExecutor] Vision failed, using fallback coords ({x}, {y})")
+                            if x > 0 and y > 0:
+                                self.control.click(x, y)
+                            else:
+                                print(f"[ActionExecutor] Skipping click - no valid coordinates")
+                    else:
+                        # No target description, use raw coordinates
+                        x, y = step.get("x", 0), step.get("y", 0)
+                        self.control.click(x, y)
                 elif action == "type":
                     self.control.type_text(step.get("text", ""))
                 elif action == "hotkey":
