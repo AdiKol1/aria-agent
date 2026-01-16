@@ -412,6 +412,11 @@ class RealtimeVoiceClient:
             pass  # Handled by response.done
 
         # Transcription events
+        elif event_type == "conversation.item.input_audio_transcription.failed":
+            error = event.get("error", {})
+            print(f"[RealtimeVoice] TRANSCRIPTION FAILED: {error}")
+            # This might happen if audio is empty or corrupted
+
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
             if self.on_transcript and transcript:
