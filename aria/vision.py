@@ -12,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 from PIL import Image
 
 from .config import (
@@ -21,7 +20,10 @@ from .config import (
     CLAUDE_MAX_TOKENS,
     SCREENSHOTS_PATH,
     PRIVATE_APPS,
+    SCREENSHOT_MAX_WIDTH,
+    SCREENSHOT_QUALITY,
 )
+from .lazy_anthropic import get_client as get_anthropic_client
 
 
 class ScreenCapture:
@@ -106,35 +108,47 @@ class ScreenCapture:
             traceback.print_exc()
             return None
 
-    def capture_to_base64(self, max_width: int = 1920) -> Optional[str]:
+    def capture_to_base64(self, max_width: int = None) -> Optional[str]:
         """Capture screen and return as base64 string for Claude."""
         result = self.capture_to_base64_with_size(max_width)
         return result[0] if result else None
 
-    def capture_to_base64_with_size(self, max_width: int = 1920) -> Optional[tuple]:
-        """Capture screen and return (base64_string, (width, height))."""
-        print("Capturing screen...")
+    def capture_to_base64_with_size(self, max_width: int = None) -> Optional[tuple]:
+        """Capture screen and return (base64_string, (width, height)).
+
+        Uses JPEG format for ~5x faster encoding and smaller size.
+        """
+        import time
+        start = time.time()
+
+        if max_width is None:
+            max_width = SCREENSHOT_MAX_WIDTH
+
         image = self.capture(save=False)
         if image is None:
-            print("Screen capture returned None (may need Screen Recording permission)")
             return None
 
-        print(f"Captured image: {image.width}x{image.height}")
+        capture_time = time.time() - start
 
-        # Resize if too large (for API efficiency)
+        # Resize for speed (smaller = faster API calls)
         if image.width > max_width:
             ratio = max_width / image.width
             new_size = (max_width, int(image.height * ratio))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
-            print(f"Resized to: {new_size}")
+            # Use BILINEAR for speed (LANCZOS is slower)
+            image = image.resize(new_size, Image.Resampling.BILINEAR)
 
         final_size = (image.width, image.height)
 
-        # Convert to base64
+        # Convert to JPEG (much faster than PNG, ~5x smaller)
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG", optimize=True)
+        # Convert to RGB if needed (JPEG doesn't support alpha)
+        if image.mode in ('RGBA', 'P'):
+            image = image.convert('RGB')
+        image.save(buffer, format="JPEG", quality=SCREENSHOT_QUALITY, optimize=False)
         b64 = base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
-        print(f"Base64 length: {len(b64)} chars, final size: {final_size}")
+
+        total_time = time.time() - start
+        print(f"Screenshot: {final_size[0]}x{final_size[1]}, {len(b64)//1024}KB, {total_time*1000:.0f}ms")
         return (b64, final_size)
 
 
@@ -142,7 +156,7 @@ class ClaudeVision:
     """Uses Claude to understand what's on screen."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.client = get_anthropic_client(ANTHROPIC_API_KEY)
         self.screen = ScreenCapture()
 
     def analyze_screen(self, question: str = "What is on the screen?") -> str:
@@ -172,7 +186,7 @@ class ClaudeVision:
                                 "type": "image",
                                 "source": {
                                     "type": "base64",
-                                    "media_type": "image/png",
+                                    "media_type": "image/jpeg",
                                     "data": screenshot_b64,
                                 },
                             },
@@ -224,7 +238,7 @@ class ClaudeVision:
                                 "type": "image",
                                 "source": {
                                     "type": "base64",
-                                    "media_type": "image/png",
+                                    "media_type": "image/jpeg",
                                     "data": screenshot_b64,
                                 },
                             },

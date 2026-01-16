@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 from .vision import get_screen_capture
 from .control import get_control
 from .memory import get_memory
+from .skills import get_registry, get_loader, SkillContext
 
 
 class AriaMCPServer:
@@ -30,6 +31,11 @@ class AriaMCPServer:
         self.control = get_control()
         self.memory = get_memory()
         self.voice = None
+
+        # Skills system
+        self.skill_registry = get_registry()
+        self.skill_loader = get_loader()
+        self.skill_loader.load_all()
 
         # Try to load voice (may fail in non-audio contexts)
         try:
@@ -215,6 +221,29 @@ class AriaMCPServer:
                     "required": ["text"]
                 }
             },
+
+            # Skills
+            {
+                "name": "list_skills",
+                "description": "List all available Aria skills with their descriptions and triggers.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "run_skill",
+                "description": "Execute an Aria skill by name with the given input.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string", "description": "Name of the skill to run"},
+                        "input": {"type": "string", "description": "Input/context for the skill"}
+                    },
+                    "required": ["skill_name", "input"]
+                }
+            },
         ]
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -315,6 +344,47 @@ class AriaMCPServer:
                     success = self.voice.speak(arguments["text"])
                     return {"content": [{"type": "text", "text": f"Spoke: {'success' if success else 'failed'}"}]}
                 return {"content": [{"type": "text", "text": "Voice not available"}]}
+
+            # Skills
+            elif name == "list_skills":
+                skills = self.skill_registry.all()
+                if skills:
+                    lines = [f"Available skills ({len(skills)}):"]
+                    for skill in skills:
+                        triggers = ", ".join(skill.triggers[:3]) if skill.triggers else "none"
+                        skill_type = "python" if skill.is_python_skill() else "markdown"
+                        lines.append(f"- {skill.name} [{skill.category.value}] ({skill_type})")
+                        lines.append(f"  {skill.description}")
+                        lines.append(f"  Triggers: {triggers}")
+                    result = "\n".join(lines)
+                else:
+                    result = "No skills available."
+                return {"content": [{"type": "text", "text": result}]}
+
+            elif name == "run_skill":
+                skill_name = arguments["skill_name"]
+                user_input = arguments["input"]
+
+                skill = self.skill_registry.get(skill_name)
+                if not skill:
+                    return {"content": [{"type": "text", "text": f"Skill not found: {skill_name}"}]}
+
+                # Build context
+                context = SkillContext(
+                    user_input=user_input,
+                    memory_context=self.memory.get_context_for_request(user_input)
+                )
+
+                # Execute skill
+                import asyncio
+                try:
+                    result = asyncio.run(skill.execute(context))
+                    if result.success:
+                        return {"content": [{"type": "text", "text": result.output}]}
+                    else:
+                        return {"content": [{"type": "text", "text": f"Skill failed: {result.error}"}]}
+                except Exception as e:
+                    return {"content": [{"type": "text", "text": f"Skill execution error: {e}"}]}
 
             else:
                 return {"content": [{"type": "text", "text": f"Unknown tool: {name}"}]}

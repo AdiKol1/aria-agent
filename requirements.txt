@@ -23,9 +23,15 @@ pyobjc-framework-ScreenCaptureKit>=10.0
 pyaudio>=0.2.14
 numpy>=1.24.0
 sounddevice>=0.4.6
+websockets>=12.0  # For OpenAI Realtime API
+
+# Gesture Recognition
+mediapipe>=0.10.0
+opencv-python>=4.8.0
 
 # Memory & Storage
 chromadb>=0.4.0
+rank-bm25>=0.2.2
 
 # Utilities
 python-dotenv>=1.0.0

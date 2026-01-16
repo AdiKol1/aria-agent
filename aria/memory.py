@@ -13,9 +13,9 @@ from typing import Optional, List, Dict, Any
 
 import chromadb
 from chromadb.config import Settings
-import anthropic
 
 from .config import ANTHROPIC_API_KEY, DATA_PATH
+from .lazy_anthropic import get_client as get_anthropic_client
 
 
 # Memory storage path
@@ -50,7 +50,7 @@ class AriaMemory:
         )
 
         # Claude client for memory extraction
-        self.claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.claude = get_anthropic_client(ANTHROPIC_API_KEY)
 
         print(f"Memory initialized: {self.facts.count()} facts, {self.interactions.count()} interactions")
 
@@ -58,13 +58,19 @@ class AriaMemory:
         """Generate a unique ID for a memory."""
         return hashlib.md5(text.encode()).hexdigest()[:12]
 
-    def remember_fact(self, fact: str, category: str = "general") -> bool:
+    def remember_fact(
+        self,
+        fact: str,
+        category: str = "general",
+        confidence: float = 0.8
+    ) -> bool:
         """
-        Store a fact about the user.
+        Store a fact about the user with enhanced metadata.
 
         Args:
             fact: The fact to remember (e.g., "User's name is John")
             category: Category like "preference", "personal", "work", etc.
+            confidence: How confident we are about this fact (0.0 to 1.0)
         """
         try:
             fact_id = self._generate_id(fact)
@@ -77,16 +83,27 @@ class AriaMemory:
 
             # If very similar fact exists (distance < 0.1), update it
             if existing['distances'] and existing['distances'][0] and existing['distances'][0][0] < 0.1:
+                # Get existing metadata to preserve usage count
+                old_meta = existing['metadatas'][0][0] if existing['metadatas'] else {}
+                usage_count = old_meta.get('usage_count', 0)
+                old_confidence = old_meta.get('confidence', 0.5)
+
+                # Increase confidence if fact is being reinforced
+                new_confidence = min(1.0, (old_confidence + confidence) / 2 + 0.1)
+
                 # Update existing
                 self.facts.update(
                     ids=[existing['ids'][0][0]],
                     documents=[fact],
                     metadatas=[{
                         "category": category,
+                        "confidence": new_confidence,
+                        "usage_count": usage_count,
                         "updated_at": datetime.now().isoformat(),
+                        "created_at": old_meta.get('created_at', datetime.now().isoformat()),
                     }]
                 )
-                print(f"Updated fact: {fact[:50]}...")
+                print(f"Updated fact (confidence: {new_confidence:.2f}): {fact[:50]}...")
             else:
                 # Add new fact
                 self.facts.add(
@@ -94,15 +111,60 @@ class AriaMemory:
                     documents=[fact],
                     metadatas=[{
                         "category": category,
+                        "confidence": confidence,
+                        "usage_count": 0,
+                        "success_rate": 1.0,  # Track when using this fact leads to success
                         "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
                     }]
                 )
-                print(f"Remembered fact: {fact[:50]}...")
+                print(f"Remembered fact (confidence: {confidence:.2f}): {fact[:50]}...")
 
             return True
         except Exception as e:
             print(f"Error remembering fact: {e}")
             return False
+
+    def mark_fact_used(self, fact_id: str, task_succeeded: bool = True) -> None:
+        """
+        Mark a fact as having been used, updating usage stats.
+
+        Args:
+            fact_id: The ID of the fact that was used
+            task_succeeded: Whether the task using this fact succeeded
+        """
+        try:
+            # Get current metadata
+            result = self.facts.get(ids=[fact_id])
+            if not result['documents']:
+                return
+
+            meta = result['metadatas'][0] if result['metadatas'] else {}
+            usage_count = meta.get('usage_count', 0) + 1
+            old_success_rate = meta.get('success_rate', 1.0)
+
+            # Update success rate (rolling average)
+            new_success_rate = (old_success_rate * (usage_count - 1) + (1 if task_succeeded else 0)) / usage_count
+
+            # Update confidence based on success rate
+            confidence = meta.get('confidence', 0.5)
+            if task_succeeded:
+                confidence = min(1.0, confidence + 0.02)
+            else:
+                confidence = max(0.1, confidence - 0.05)
+
+            self.facts.update(
+                ids=[fact_id],
+                metadatas=[{
+                    **meta,
+                    "usage_count": usage_count,
+                    "success_rate": new_success_rate,
+                    "confidence": confidence,
+                    "last_used": datetime.now().isoformat(),
+                }]
+            )
+        except Exception as e:
+            print(f"Error marking fact used: {e}")
 
     def remember_interaction(self, summary: str, user_request: str, outcome: str) -> bool:
         """
@@ -180,16 +242,45 @@ class AriaMemory:
 
             facts = []
             for i, doc in enumerate(results['documents'][0]):
+                meta = results['metadatas'][0][i]
                 facts.append({
+                    "id": results['ids'][0][i],
                     "fact": doc,
-                    "category": results['metadatas'][0][i].get('category', 'general'),
+                    "category": meta.get('category', 'general'),
+                    "confidence": meta.get('confidence', 0.5),
+                    "usage_count": meta.get('usage_count', 0),
+                    "success_rate": meta.get('success_rate', 1.0),
                     "relevance": 1 - results['distances'][0][i] if results['distances'] else 0
                 })
+
+            # Sort by combined score: relevance * confidence * success_rate
+            for f in facts:
+                f['score'] = f['relevance'] * f['confidence'] * f['success_rate']
+            facts.sort(key=lambda x: x['score'], reverse=True)
 
             return facts
         except Exception as e:
             print(f"Error recalling facts: {e}")
             return []
+
+    def search_memories(self, query: str, n_results: int = 5) -> List[str]:
+        """
+        Search for relevant memory facts and return as simple list of strings.
+        Used by IntentEngine for context resolution.
+
+        Args:
+            query: What to search for
+            n_results: Maximum number of results
+
+        Returns:
+            List of fact strings, ordered by relevance and quality
+        """
+        facts = self.recall_facts(query, n_results)
+        # Return only high-quality facts (confidence > 0.3 and relevance > 0.3)
+        return [
+            f['fact'] for f in facts
+            if f.get('confidence', 0.5) > 0.3 and f.get('relevance', 0) > 0.3
+        ]
 
     def recall_interactions(self, query: str, n_results: int = 3) -> List[Dict[str, Any]]:
         """

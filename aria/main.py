@@ -4,6 +4,7 @@ Aria Agent - Main Entry Point
 A menubar app that runs Aria as an always-on assistant.
 """
 
+import json
 import sys
 import threading
 import time
@@ -12,11 +13,21 @@ from typing import Optional
 
 import rumps
 
-from .config import validate_config
+from .config import validate_config, OPENAI_API_KEY, REALTIME_VOICE_ENABLED
 from .agent import get_agent
-from .voice import get_voice, ConversationLoop
+from .voice import get_voice, ConversationLoop, REALTIME_AVAILABLE
 from .wake_word import create_wake_detector
 from .vision import get_screen_capture
+
+# Import realtime voice if available
+if REALTIME_AVAILABLE:
+    from .realtime_voice import (
+        RealtimeVoiceClient,
+        RealtimeConfig,
+        RealtimeConversationLoop,
+        ARIA_REALTIME_TOOLS,
+        create_aria_tool_handler,
+    )
 
 # Set up logging
 import logging
@@ -138,8 +149,14 @@ class AriaMenubarApp(rumps.App):
         self.is_active = True
         self._update_status("Listening...")
 
-        # Run conversation in background thread
-        threading.Thread(target=self._conversation_turn, daemon=True).start()
+        # Use Realtime Voice for natural, fluid conversation if available
+        if REALTIME_AVAILABLE and REALTIME_VOICE_ENABLED:
+            logger.info("Starting REALTIME conversation (low latency mode)")
+            threading.Thread(target=self._realtime_conversation, daemon=True).start()
+        else:
+            # Fallback to traditional (slower) mode
+            logger.info("Starting traditional conversation (higher latency)")
+            threading.Thread(target=self._conversation_turn, daemon=True).start()
 
     def _conversation_turn(self):
         """Execute a continuous conversation until user ends it."""
@@ -153,11 +170,14 @@ class AriaMenubarApp(rumps.App):
         try:
             # Acknowledge wake
             logger.info("Starting conversation")
-            self.voice.speak("Hey! What can I help you with?")
+            logger.info("About to speak greeting...")
+            spoke = self.voice.speak("Hey! What can I help you with?")
+            logger.info(f"Spoke greeting: {spoke}")
             time.sleep(0.2)
 
             turn_count = 0
             max_turns = 20  # Safety limit
+            logger.info("Entering conversation loop...")
 
             while turn_count < max_turns:
                 turn_count += 1
@@ -225,13 +245,112 @@ class AriaMenubarApp(rumps.App):
         finally:
             self.is_active = False
 
+    def _realtime_conversation(self):
+        """Run a conversation using OpenAI Realtime API for natural, fluid voice."""
+        import asyncio
+
+        async def run_realtime():
+            try:
+                # Create realtime config with Aria's personality
+                config = RealtimeConfig(
+                    voice="shimmer",  # Natural, warm voice (nova not available in Realtime API)
+                    vad_threshold=0.6,  # Slightly higher to reduce false triggers
+                    silence_duration_ms=700,  # Wait a bit longer for natural pauses
+                    instructions="""You are Aria, a friendly and intelligent AI assistant.
+
+You have a warm, natural conversational style. Keep responses concise but helpful.
+You can help with questions, control the computer, and have natural conversations.
+
+Important:
+- Be conversational and natural, not robotic
+- Keep responses brief for voice (1-3 sentences unless explaining something)
+- If asked to do something on the computer, explain what you'll do
+- Remember context from the conversation"""
+                )
+
+                # Create tool handler that connects to Aria's agent
+                def handle_tool(call_id: str, name: str, args: dict) -> str:
+                    """Handle tool calls from realtime API."""
+                    logger.info(f"Realtime tool call: {name}({args})")
+                    try:
+                        if name == "remember":
+                            self.agent.memory.add_fact(args.get("fact", ""), args.get("category", "other"))
+                            return '{"success": true}'
+                        elif name == "recall":
+                            results = self.agent.memory.search_memories(args.get("query", ""), n_results=5)
+                            return json.dumps({"memories": results})
+                        elif name == "click":
+                            self.agent.control.click(args.get("x", 0), args.get("y", 0))
+                            return '{"success": true}'
+                        elif name == "type_text":
+                            self.agent.control.type_text(args.get("text", ""))
+                            return '{"success": true}'
+                        elif name == "open_app":
+                            self.agent.control.open_app(args.get("app", ""))
+                            return '{"success": true}'
+                        elif name == "open_url":
+                            self.agent.control.open_url(args.get("url", ""))
+                            return '{"success": true}'
+                        else:
+                            return f'{{"error": "Unknown tool: {name}"}}'
+                    except Exception as e:
+                        return f'{{"error": "{str(e)}"}}'
+
+                # Create conversation loop
+                loop = RealtimeConversationLoop(
+                    api_key=OPENAI_API_KEY,
+                    config=config,
+                    tools=ARIA_REALTIME_TOOLS,
+                    tool_handler=handle_tool
+                )
+
+                # Set up callbacks
+                def on_user_speech(text):
+                    logger.info(f"[User]: {text}")
+                    self._update_status("Thinking...")
+
+                def on_assistant_done(text):
+                    logger.info(f"[Aria]: {text[:100]}...")
+                    self._update_status("Listening...")
+
+                loop.on_user_transcript = on_user_speech
+                loop.on_assistant_done = on_assistant_done
+
+                # Run the realtime conversation (blocking - runs until stopped)
+                self._update_status("Listening...")
+                logger.info("Realtime voice connected - speak naturally!")
+
+                await loop.run()  # This blocks until conversation ends
+
+            except Exception as e:
+                logger.error(f"Realtime conversation error: {e}")
+                logger.error(traceback.format_exc())
+                # Fallback to traditional mode
+                logger.info("Falling back to traditional voice mode")
+                self._conversation_turn()
+
+            finally:
+                self.is_active = False
+                self._update_status("Ready")
+
+        # Run the async conversation
+        try:
+            asyncio.run(run_realtime())
+        except Exception as e:
+            logger.error(f"Realtime async error: {e}")
+            self.is_active = False
+            self._update_status("Ready")
+
     def _needs_screen_context(self, user_input: str) -> bool:
         """Determine if we need to capture screen for this request."""
         # Keywords that suggest we need to see the screen
         SCREEN_KEYWORDS = [
             "screen", "see", "look", "what's", "what is", "show", "click",
             "type", "open", "close", "window", "app", "button", "where",
-            "find", "search", "this", "that", "here", "there", "current"
+            "find", "search", "this", "that", "here", "there", "current",
+            # Action keywords - always need screen for these
+            "scroll", "page", "go", "navigate", "facebook", "chrome",
+            "safari", "browser", "website", "url", "tab", "menu"
         ]
         user_lower = user_input.lower()
         return any(keyword in user_lower for keyword in SCREEN_KEYWORDS)

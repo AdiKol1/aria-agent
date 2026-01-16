@@ -65,6 +65,94 @@ When connected, Claude Code gains these Aria capabilities:
 ### Voice
 - `speak(text)` - Speak text aloud (when Aria is running)
 
+### Skills
+- `list_skills()` - List all available Aria skills
+- `run_skill(skill_name, input)` - Execute a skill by name
+
+## Skills System
+
+Aria has a flexible skills system for extending capabilities:
+
+### Built-in Skills
+| Skill | Category | Description |
+|-------|----------|-------------|
+| `open_application` | system | Open apps by name |
+| `click_at_position` | system | Click at coordinates |
+| `type_text` | system | Type text |
+| `scroll_screen` | system | Scroll up/down |
+| `keyboard_shortcut` | system | Execute shortcuts |
+| `take_screenshot` | system | Capture screen |
+| `remember_fact` | memory | Store to memory |
+| `recall_memory` | memory | Search memory |
+| `open_url` | browser | Open URLs |
+
+### Creating User Skills
+
+Aria supports the [Anthropic Agent Skills](https://agentskills.io/specification) format.
+
+**Recommended: Folder format (official spec)**
+```
+~/.aria/skills/my-skill/
+├── SKILL.md          # Required - frontmatter + instructions
+├── scripts/          # Optional - executable code
+├── references/       # Optional - additional docs
+└── assets/           # Optional - static resources
+```
+
+**SKILL.md format:**
+```markdown
+---
+name: my-skill
+description: What the skill does and when to use it. Include keywords.
+---
+
+# My Skill
+
+## Instructions
+[Your instructions here]
+
+## Examples
+- Example usage
+```
+
+**Legacy: Flat file format (still supported)**
+```markdown
+---
+name: my-skill
+description: What the skill does
+triggers: ["keyword1", "keyword2"]
+category: custom
+---
+# Skill Instructions
+
+Your instructions here...
+```
+
+See https://agentskills.io/specification for the full spec.
+
+### Skill Categories
+- `system` - Desktop control
+- `file` - File operations
+- `browser` - Web browsing
+- `memory` - Memory operations
+- `voice` - Voice/TTS
+- `workflow` - Multi-step procedures
+- `custom` - User-defined
+
+### Hook System
+
+Configure hooks in `~/.aria/hooks.yaml`:
+
+```yaml
+hooks:
+  session_start:
+    - name: inject-context
+      command: echo "Today is $(date)"
+  before_request:
+    - name: log-request
+      command: echo "$ARIA_USER_INPUT" >> ~/.aria/log.txt
+```
+
 ## Memory System
 
 Memory is stored in `~/.aria/data/memory/` using ChromaDB. Both Aria and Claude Code share this memory.
@@ -136,6 +224,7 @@ When you tell Aria something coding-related, it automatically delegates to Claud
 
 ## Files
 
+### Core
 - `aria/main.py` - Menubar app entry point
 - `aria/agent.py` - Core agent brain (Claude API + actions)
 - `aria/memory.py` - ChromaDB long-term memory
@@ -144,4 +233,20 @@ When you tell Aria something coding-related, it automatically delegates to Claud
 - `aria/vision.py` - Screen capture
 - `aria/control.py` - Computer control (pyautogui)
 - `aria/voice.py` - Voice I/O (OpenAI Whisper + TTS)
+
+### Intelligence (v2.0)
+- `aria/intent.py` - Intent understanding with memory
+- `aria/planner.py` - Task planning and decomposition
+- `aria/learning.py` - Learning from outcomes
+- `aria/clarification.py` - Smart question asking
+
+### Skills System
+- `aria/skills/` - Skills module
+- `aria/skills/base.py` - Skill and SkillResult classes
+- `aria/skills/registry.py` - @skill decorator and registry
+- `aria/skills/loader.py` - Loads markdown and Python skills
+- `aria/skills/hooks.py` - Session lifecycle hooks
+- `aria/skills/builtin/` - Built-in skills
+
+### Entry Points
 - `run_mcp_server.py` - Script to run MCP server
