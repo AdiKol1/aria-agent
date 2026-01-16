@@ -18,6 +18,7 @@ from .agent import get_agent
 from .voice import get_voice, ConversationLoop, REALTIME_AVAILABLE
 from .wake_word import create_wake_detector
 from .vision import get_screen_capture
+from .action_executor import VisionActionExecutor, get_action_executor
 
 # Import realtime voice if available
 if REALTIME_AVAILABLE:
@@ -256,44 +257,115 @@ class AriaMenubarApp(rumps.App):
                     voice="shimmer",  # Natural, warm voice (nova not available in Realtime API)
                     vad_threshold=0.6,  # Slightly higher to reduce false triggers
                     silence_duration_ms=700,  # Wait a bit longer for natural pauses
-                    instructions="""You are Aria, a friendly and intelligent AI assistant.
+                    instructions="""You are Aria, a friendly and intelligent AI assistant with vision-guided computer control.
 
 You have a warm, natural conversational style. Keep responses concise but helpful.
 You can help with questions, control the computer, and have natural conversations.
 
-Important:
+## CRITICAL: How to Control the Computer
+You have access to vision-guided tools that LOOK at the screen and find elements accurately:
+
+1. **execute_task** - PREFERRED for most actions. Describe what you want: "open a new Chrome window", "click the submit button". The system sees the screen and figures out how.
+
+2. **click** - Click by DESCRIPTION, not coordinates. Say WHAT to click: "the File menu", "the blue button". NEVER guess x,y coordinates.
+
+3. **open_menu_item** - For menu actions: specify menu name and item name.
+
+4. **open_app** - Opens apps reliably by name.
+
+## Important Guidelines:
+- ALWAYS use description-based tools, NEVER guess coordinates
+- The system will verify actions succeeded before confirming to user
+- If an action fails, the system will retry with different approaches
 - Be conversational and natural, not robotic
 - Keep responses brief for voice (1-3 sentences unless explaining something)
-- If asked to do something on the computer, explain what you'll do
+- After performing an action, briefly confirm what happened
 - Remember context from the conversation"""
                 )
 
-                # Create tool handler that connects to Aria's agent
+                # Create vision-guided action executor
+                action_executor = get_action_executor(self.agent.control)
+
+                # Create tool handler with vision-guided actions
                 def handle_tool(call_id: str, name: str, args: dict) -> str:
-                    """Handle tool calls from realtime API."""
+                    """Handle tool calls from realtime API with vision guidance."""
                     logger.info(f"Realtime tool call: {name}({args})")
                     try:
                         if name == "remember":
                             self.agent.memory.add_fact(args.get("fact", ""), args.get("category", "other"))
                             return '{"success": true}'
+
                         elif name == "recall":
                             results = self.agent.memory.search_memories(args.get("query", ""), n_results=5)
                             return json.dumps({"memories": results})
+
                         elif name == "click":
-                            self.agent.control.click(args.get("x", 0), args.get("y", 0))
-                            return '{"success": true}'
+                            # If target description provided, use vision
+                            target = args.get("target", "")
+                            if target:
+                                result = action_executor.click_element(target)
+                                return json.dumps({"success": result.success, "message": result.message})
+                            else:
+                                # Blind click at coordinates (not recommended)
+                                x, y = args.get("x", 0), args.get("y", 0)
+                                self.agent.control.click(x, y)
+                                return '{"success": true, "warning": "Clicked without vision verification"}'
+
+                        elif name == "execute_task":
+                            # High-level task with vision planning and verification
+                            task = args.get("task", "")
+                            result = action_executor.execute_task(task)
+                            return json.dumps({
+                                "success": result.success,
+                                "message": result.message,
+                                "details": result.details
+                            })
+
+                        elif name == "open_menu_item":
+                            menu = args.get("menu", "")
+                            item = args.get("item", "")
+                            result = action_executor.open_menu_item(menu, item)
+                            return json.dumps({"success": result.success, "message": result.message})
+
                         elif name == "type_text":
                             self.agent.control.type_text(args.get("text", ""))
                             return '{"success": true}'
-                        elif name == "open_app":
-                            self.agent.control.open_app(args.get("app", ""))
+
+                        elif name == "hotkey":
+                            keys = args.get("keys", [])
+                            self.agent.control.hotkey(keys)
                             return '{"success": true}'
+
+                        elif name == "press_key":
+                            self.agent.control.press_key(args.get("key", ""))
+                            return '{"success": true}'
+
+                        elif name == "open_app":
+                            app_name = args.get("app", "")
+                            self.agent.control.open_app(app_name)
+                            time.sleep(1)
+                            verified = action_executor.verify_action(f"{app_name} is now the active application")
+                            return json.dumps({
+                                "success": True,
+                                "verified": verified,
+                                "message": f"Opened {app_name}" + (" (verified)" if verified else " (not verified)")
+                            })
+
                         elif name == "open_url":
                             self.agent.control.open_url(args.get("url", ""))
                             return '{"success": true}'
+
+                        elif name == "scroll":
+                            self.agent.control.scroll(args.get("amount", 0))
+                            return '{"success": true}'
+
                         else:
                             return f'{{"error": "Unknown tool: {name}"}}'
+
                     except Exception as e:
+                        logger.error(f"Tool error: {e}")
+                        import traceback
+                        traceback.print_exc()
                         return f'{{"error": "{str(e)}"}}'
 
                 # Create conversation loop

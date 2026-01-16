@@ -885,32 +885,55 @@ class RealtimeConversationLoop:
 
 
 # Aria tool definitions for Realtime API
-# These map to the MCP server tools available in Aria
+# These use vision-guided execution for reliable action completion
 ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
-        "name": "click",
-        "description": "Click at screen coordinates. Use after seeing the screen to click on UI elements.",
+        "name": "execute_task",
+        "description": "Execute a high-level task using vision to plan and verify. This is the PREFERRED tool for most actions. Describe what you want to accomplish and the system will use vision to figure out how to do it. Examples: 'open a new Chrome window', 'click the File menu and select New', 'scroll down on this page'",
         "parameters": {
             "type": "object",
             "properties": {
-                "x": {"type": "integer", "description": "X coordinate on screen"},
-                "y": {"type": "integer", "description": "Y coordinate on screen"}
+                "task": {
+                    "type": "string",
+                    "description": "Description of what to accomplish (e.g., 'open a new Chrome window', 'click the submit button')"
+                }
             },
-            "required": ["x", "y"]
+            "required": ["task"]
         }
     },
     {
         "type": "function",
-        "name": "double_click",
-        "description": "Double-click at screen coordinates.",
+        "name": "click",
+        "description": "Click on a UI element by describing what to click. The system will use vision to find the element and click it. Do NOT guess coordinates - describe the target instead.",
         "parameters": {
             "type": "object",
             "properties": {
-                "x": {"type": "integer", "description": "X coordinate on screen"},
-                "y": {"type": "integer", "description": "Y coordinate on screen"}
+                "target": {
+                    "type": "string",
+                    "description": "Description of what to click (e.g., 'the File menu', 'the blue Submit button', 'the search box')"
+                }
             },
-            "required": ["x", "y"]
+            "required": ["target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "open_menu_item",
+        "description": "Open a menu and click a menu item. Uses vision to find and click accurately.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "menu": {
+                    "type": "string",
+                    "description": "The menu to open (e.g., 'File', 'Edit', 'Chrome')"
+                },
+                "item": {
+                    "type": "string",
+                    "description": "The menu item to click (e.g., 'New Window', 'Copy', 'Preferences')"
+                }
+            },
+            "required": ["menu", "item"]
         }
     },
     {
