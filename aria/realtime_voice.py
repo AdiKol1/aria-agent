@@ -353,6 +353,9 @@ class RealtimeVoiceClient:
             event: The event data.
         """
         event_type = event.get("type", "")
+        # DEBUG: Log all events to diagnose issues
+        if event_type not in ["response.audio.delta", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"]:
+            print(f"[RealtimeVoice DEBUG] Event: {event_type}")
 
         # Audio output events
         if event_type == "response.audio.delta":
