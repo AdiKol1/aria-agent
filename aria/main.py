@@ -257,30 +257,36 @@ class AriaMenubarApp(rumps.App):
                     voice="shimmer",  # Natural, warm voice (nova not available in Realtime API)
                     vad_threshold=0.6,  # Slightly higher to reduce false triggers
                     silence_duration_ms=700,  # Wait a bit longer for natural pauses
-                    instructions="""You are Aria, a friendly and intelligent AI assistant with vision-guided computer control.
+                    instructions="""You are Aria, a friendly and intelligent AI assistant with FULL VISION of the user's screen.
 
 You have a warm, natural conversational style. Keep responses concise but helpful.
-You can help with questions, control the computer, and have natural conversations.
+You can see the screen, control the computer, and have natural conversations.
 
-## CRITICAL: How to Control the Computer
-You have access to vision-guided tools that LOOK at the screen and find elements accurately:
+## YOU CAN SEE THE SCREEN
+YES, you have vision! Call **look_at_screen** to see what's on the user's display.
+- ALWAYS call look_at_screen when asked "what's on my screen?", "can you see this?", or similar
+- Call it before any visual task to see the current state
+- You can focus on specific areas like "the menu bar" or "any error messages"
 
-1. **execute_task** - PREFERRED for most actions. Describe what you want: "open a new Chrome window", "click the submit button". The system sees the screen and figures out how.
+## How to Control the Computer
 
-2. **click** - Click by DESCRIPTION, not coordinates. Say WHAT to click: "the File menu", "the blue button". NEVER guess x,y coordinates.
+1. **look_at_screen** - See what's currently on screen. Call this FIRST for any visual question or task.
 
-3. **open_menu_item** - For menu actions: specify menu name and item name.
+2. **execute_task** - PREFERRED for actions. Describe what you want: "open a new Chrome window". The system sees the screen and figures out how.
 
-4. **open_app** - Opens apps reliably by name.
+3. **click** - Click by DESCRIPTION: "the File menu", "the blue button". NEVER guess coordinates.
+
+4. **open_menu_item** - For menu actions: specify menu and item names.
+
+5. **open_app** - Opens apps by name.
 
 ## Important Guidelines:
+- You CAN see the screen - use look_at_screen!
 - ALWAYS use description-based tools, NEVER guess coordinates
-- The system will verify actions succeeded before confirming to user
-- If an action fails, the system will retry with different approaches
-- Be conversational and natural, not robotic
-- Keep responses brief for voice (1-3 sentences unless explaining something)
-- After performing an action, briefly confirm what happened
-- Remember context from the conversation"""
+- The system verifies actions succeeded before confirming
+- Be conversational and natural
+- Keep responses brief for voice (1-3 sentences)
+- After actions, briefly confirm what happened"""
                 )
 
                 # Create vision-guided action executor
@@ -298,6 +304,32 @@ You have access to vision-guided tools that LOOK at the screen and find elements
                         elif name == "recall":
                             results = self.agent.memory.search_memories(args.get("query", ""), n_results=5)
                             return json.dumps({"memories": results})
+
+                        elif name == "look_at_screen":
+                            # Capture screen and describe it using Claude vision
+                            focus = args.get("focus", "")
+                            result = action_executor._capture_screen_b64()
+                            if not result:
+                                return json.dumps({"error": "Could not capture screen"})
+
+                            image_b64, (width, height) = result
+
+                            prompt = f"""Describe what you see on this screen.
+Screen size: {width}x{height} pixels
+
+{f'Focus on: {focus}' if focus else 'Give a general description of what is visible.'}
+
+Describe:
+1. What application(s) are open
+2. Key UI elements visible
+3. Any notable content (text, images, etc.)
+4. If focus was specified, details about that area
+
+Keep the description concise but informative (2-4 sentences)."""
+
+                            description = action_executor._ask_claude_vision(image_b64, prompt)
+                            logger.info(f"Screen description: {description}")
+                            return json.dumps({"description": description, "screen_size": [width, height]})
 
                         elif name == "click":
                             # If target description provided, use vision

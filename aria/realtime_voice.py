@@ -889,6 +889,21 @@ class RealtimeConversationLoop:
 ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
+        "name": "look_at_screen",
+        "description": "Look at the user's screen and describe what you see. ALWAYS call this first when the user asks about their screen, what app is open, or before performing any visual task. This gives you vision of what's currently displayed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "focus": {
+                    "type": "string",
+                    "description": "Optional: what to focus on (e.g., 'the menu bar', 'any error messages', 'the browser tabs')"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "type": "function",
         "name": "execute_task",
         "description": "Execute a high-level task using vision to plan and verify. This is the PREFERRED tool for most actions. Describe what you want to accomplish and the system will use vision to figure out how to do it. Examples: 'open a new Chrome window', 'click the File menu and select New', 'scroll down on this page'",
         "parameters": {
