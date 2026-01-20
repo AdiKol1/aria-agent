@@ -199,7 +199,7 @@ class AriaMenubarApp(rumps.App):
             rumps.notification(
                 "Aria",
                 "Ready",
-                "Say 'Hey Aria' or press ⌥ Space to activate"
+                "Say 'Aria' or press ⌥ Space to activate"
             )
 
         except Exception as e:

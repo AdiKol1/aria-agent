@@ -27,7 +27,7 @@ SCREENSHOTS_PATH = ARIA_HOME / "screenshots"
 SCREENSHOTS_PATH.mkdir(exist_ok=True)
 
 # Wake Word
-WAKE_WORD = "hey aria"
+WAKE_WORD = "aria"  # Just say "Aria" to activate
 
 # Privacy - Apps to ignore (won't capture screen when these are focused)
 PRIVATE_APPS = [

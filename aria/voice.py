@@ -403,7 +403,7 @@ class ConversationLoop:
 
     def run_continuous(self, wake_detector):
         """Run continuous conversation with wake word."""
-        print("Aria is ready. Say 'Hey Aria' to activate.")
+        print("Aria is ready. Say 'Aria' to activate.")
 
         def on_wake():
             if not self.active:
