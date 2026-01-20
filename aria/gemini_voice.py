@@ -166,11 +166,64 @@ class GeminiVoiceClient:
 
             logger.info(f"[VoiceBridge] Intercepting action request: '{transcript}'")
 
+            # PRE-EXECUTION DEDUP: Parse intent to see what action WOULD be executed
+            # Then check if that action was recently executed
+            try:
+                from aria.core.intent_parser import parse
+                intent = parse(transcript)
+                # Create a dedup key from the parsed intent (action + target)
+                pre_check_key = f"{intent.action.value}:{intent.target or ''}".lower().strip()
+                now = time.time()
+
+                if pre_check_key in self._recent_actions:
+                    time_since = now - self._recent_actions[pre_check_key]
+                    if time_since < self._action_cooldown:
+                        logger.info(f"[VoiceBridge] SKIPPING duplicate intent (executed {time_since:.1f}s ago): '{pre_check_key}'")
+                        return True  # Block without executing
+            except Exception as e:
+                logger.debug(f"[VoiceBridge] Pre-dedup check failed: {e}")
+                pre_check_key = None
+
             # Process through VoiceBridge (deterministic, no AI needed for common commands)
             result = self._voice_bridge.process_voice_input(transcript)
 
             if result.success:
                 logger.info(f"[VoiceBridge] Action executed: {result.response}")
+
+                # Record this action for deduplication using intent key
+                if pre_check_key:
+                    self._recent_actions[pre_check_key] = time.time()
+                    logger.debug(f"[VoiceBridge] Recorded action for dedup: '{pre_check_key}'")
+
+                    # ALSO record in tool handler format for cross-system deduplication
+                    # Map intent to tool call format: open_app:{"app": "Google Chrome"}
+                    try:
+                        from aria.core.intent_parser import IntentType
+                        import json
+                        tool_key = None
+                        if intent.action == IntentType.OPEN and intent.target:
+                            # Map common apps
+                            target_lower = intent.target.lower()
+                            app_map = {
+                                "chrome": "Google Chrome", "google chrome": "Google Chrome",
+                                "safari": "Safari", "finder": "Finder", "terminal": "Terminal",
+                                "notes": "Notes", "messages": "Messages", "slack": "Slack",
+                                "claude": "Claude", "vscode": "Visual Studio Code", "code": "Visual Studio Code",
+                            }
+                            app_name = app_map.get(target_lower, intent.target.title())
+                            tool_key = f'open_app:{json.dumps({"app": app_name}, sort_keys=True)}'
+                        elif intent.action == IntentType.NAVIGATE and intent.target:
+                            url = intent.target if '://' in intent.target else f'https://{intent.target}'
+                            tool_key = f'open_url:{json.dumps({"url": url}, sort_keys=True)}'
+                        elif intent.action == IntentType.SCROLL:
+                            amount = -300 if 'down' in (intent.target or '').lower() else 300
+                            tool_key = f'scroll:{json.dumps({"amount": amount}, sort_keys=True)}'
+
+                        if tool_key:
+                            self._recent_actions[tool_key] = time.time()
+                            logger.debug(f"[VoiceBridge] Also recorded tool-format dedup key: '{tool_key}'")
+                    except Exception as e:
+                        logger.debug(f"[VoiceBridge] Could not create tool-format dedup key: {e}")
 
                 # Mark that we handled this turn - prevents confabulation fallback
                 self._tool_called_this_turn = True
@@ -524,6 +577,12 @@ class GeminiVoiceClient:
                     if self._try_voice_bridge(self._last_user_request):
                         # VoiceBridge handled it - skip fallback logic
                         logger.info(f"[VoiceBridge] Successfully handled: '{self._last_user_request}'")
+                        # CRITICAL: Clear transcript buffer to prevent re-triggering
+                        # When user says "Yes" after "Open Chrome", buffer becomes "Open Chrome. Yes"
+                        # which would trigger another action. Clearing prevents this.
+                        self._transcript_buffer = []
+                        self._last_user_request = ""
+                        logger.info(f"[VoiceBridge] Cleared transcript buffer to prevent re-triggering")
                         if self.on_transcript:
                             self.on_transcript(response.transcript)
                         # Continue to next response - Gemini may still respond but we've done the action
@@ -603,6 +662,10 @@ class GeminiVoiceClient:
                                 if self._voice_bridge and not self._tool_called_this_turn:
                                     if self._try_voice_bridge(self._last_user_request):
                                         logger.info(f"[VoiceBridge] Successfully handled: '{self._last_user_request}'")
+                                        # CRITICAL: Clear transcript buffer to prevent re-triggering
+                                        self._transcript_buffer = []
+                                        self._last_user_request = ""
+                                        logger.info(f"[VoiceBridge] Cleared transcript buffer to prevent re-triggering")
                                         if self.on_transcript:
                                             self.on_transcript(transcript_text)
                                         continue  # Skip to next field - action already handled
@@ -837,23 +900,36 @@ class GeminiVoiceClient:
 
             # Handle tool calls
             if hasattr(response, 'tool_call') and response.tool_call:
-                print(f"[Aria action]: Calling tool...")
-                self._tool_called_this_turn = True  # Mark that we actually called a tool
-                self._last_action_request = ""  # Clear action request since tool was called
-                for func_call in response.tool_call.function_calls:
-                    if self.on_tool_call:
+                # Skip if VoiceBridge already handled this turn
+                if self._tool_called_this_turn:
+                    logger.info(f"[Gemini] Skipping tool call - VoiceBridge already handled this turn")
+                    # Still need to send a response to Gemini so it doesn't hang
+                    for func_call in response.tool_call.function_calls:
                         call_id = getattr(func_call, 'id', str(time.time()))
                         name = func_call.name
-                        args = dict(func_call.args) if func_call.args else {}
-                        print(f"[Aria action]: {name}({args})")
+                        await self._send_tool_response(call_id, name, json.dumps({
+                            "success": True,
+                            "message": "Action already completed by VoiceBridge"
+                        }))
+                else:
+                    # VoiceBridge didn't handle - proceed with Gemini tool execution
+                    print(f"[Aria action]: Calling tool...")
+                    self._tool_called_this_turn = True  # Mark that we actually called a tool
+                    self._last_action_request = ""  # Clear action request since tool was called
+                    for func_call in response.tool_call.function_calls:
+                        if self.on_tool_call:
+                            call_id = getattr(func_call, 'id', str(time.time()))
+                            name = func_call.name
+                            args = dict(func_call.args) if func_call.args else {}
+                            print(f"[Aria action]: {name}({args})")
 
-                        try:
-                            result = self.on_tool_call(call_id, name, args)
-                            print(f"[GeminiVoice] Tool result: {str(result)[:100]}...")
-                            await self._send_tool_response(call_id, name, result)
-                        except Exception as e:
-                            print(f"[GeminiVoice] Tool error: {e}")
-                            await self._send_tool_response(call_id, name, json.dumps({"error": str(e)}))
+                            try:
+                                result = self.on_tool_call(call_id, name, args)
+                                print(f"[GeminiVoice] Tool result: {str(result)[:100]}...")
+                                await self._send_tool_response(call_id, name, result)
+                            except Exception as e:
+                                print(f"[GeminiVoice] Tool error: {e}")
+                                await self._send_tool_response(call_id, name, json.dumps({"error": str(e)}))
 
             # Note: Transcription is now handled at the start of this function
 
@@ -1312,35 +1388,53 @@ class GeminiVoiceClient:
         # Use normalized check to handle fragmented speech like "clic k" -> "click"
         if not tool_name and ("click" in request_lower or "click" in request_normalized):
             import re
-            # Extract what to click on: "click on the X", "click the button", "click in the X"
-            # Try patterns in order of specificity
-            patterns = [
-                r'click\s+(?:on|in)\s+(?:the\s+)?(.+)',  # "click on/in the X"
-                r'click\s+(?:the\s+)?(.+)',              # "click the X" or "click X"
+
+            # Skip if this is a complaint/negative context (user saying "you didn't click")
+            # Use normalized text to handle fragments like "did n't" -> "didn't"
+            normalized_for_check = request_normalized.lower() if request_normalized else request_lower
+            # Also check for fragmented negatives
+            negative_patterns = [
+                r"didn'?t\s+click", r"don'?t\s+click", r"can'?t\s+click", r"won'?t\s+click",
+                r"still\s+didn'?t", r"you\s+didn'?t", r"not\s+clicking",
+                r"didn'?t\s+actually", r"failed\s+to\s+click", r"missed",
+                r"did\s*n'?t", r"don\s*'?t", r"can\s*'?t",  # Handle fragmented contractions
             ]
-            target = None
-            for pattern in patterns:
-                match = re.search(pattern, request_lower)
-                if match:
-                    target = match.group(1).strip()
-                    break
+            is_negative = any(re.search(p, normalized_for_check) for p in negative_patterns)
+            # Also check raw text for fragments
+            if not is_negative:
+                is_negative = any(re.search(p, request_lower) for p in negative_patterns)
+            if is_negative:
+                logger.info(f"[FALLBACK] Skipping click - negative context detected: '{request_lower[:50]}'")
+            else:
+                # Extract what to click on: "click on the X", "click the button", "click in the X"
+                # Try patterns in order of specificity
+                patterns = [
+                    r'click\s+(?:on|in)\s+(?:the\s+)?(.+)',  # "click on/in the X"
+                    r'click\s+(?:the\s+)?(.+)',              # "click the X" or "click X"
+                ]
+                target = None
+                for pattern in patterns:
+                    match = re.search(pattern, request_lower)
+                    if match:
+                        target = match.group(1).strip()
+                        break
 
-            # If no regex match (fragmented speech), extract from normalized
-            if not target and "click" in request_normalized:
-                # Remove "click" and common words, use what's left
-                target = request_lower.replace("clic", "").replace("k", "", 1).strip()
-                # Clean up
-                target = re.sub(r'^(in|on|the|a)\s+', '', target)
-                target = target.strip()
+                # If no regex match (fragmented speech), extract from normalized
+                if not target and "click" in request_normalized:
+                    # Remove "click" and common words, use what's left
+                    target = request_lower.replace("clic", "").replace("k", "", 1).strip()
+                    # Clean up
+                    target = re.sub(r'^(in|on|the|a)\s+', '', target)
+                    target = target.strip()
 
-            if target:
-                # Clean up common words
-                target = re.sub(r'\s*(please|for me|now|first)\s*$', '', target)
-                target = target.strip()
                 if target:
-                    tool_name = "click"
-                    tool_args = {"target": target}
-                    logger.info(f"[FALLBACK] Detected click request - target: '{target}'")
+                    # Clean up common words
+                    target = re.sub(r'\s*(please|for me|now|first)\s*$', '', target)
+                    target = target.strip()
+                    if target:
+                        tool_name = "click"
+                        tool_args = {"target": target}
+                        logger.info(f"[FALLBACK] Detected click request - target: '{target}'")
 
         # Detect "move mouse" requests - handle speech variants like "mouth"
         if not tool_name and is_mouse_request and ("move" in request_lower or "move" in request_normalized):
@@ -1490,20 +1584,43 @@ class GeminiVoiceClient:
                 # Send the tool response to Gemini so it knows what happened
                 await self._send_tool_response(call_id, tool_name, result)
 
-                # Send a STRONG message telling Gemini the action is DONE - don't try again
-                await self._active_session.send(
-                    input=types.LiveClientContent(
-                        turns=[
-                            types.Content(
-                                role="user",
-                                parts=[types.Part(text=f"[SYSTEM: ACTION COMPLETED SUCCESSFULLY. {tool_name} was executed and worked. Result: {result[:100]}. DO NOT try to execute this action again. Just tell the user it's done.]")]
-                            )
-                        ],
-                        turn_complete=True
-                    ),
-                    end_of_turn=True
-                )
-                logger.info(f"[FALLBACK] Notified Gemini of successful execution - action complete")
+                # Check if action actually succeeded by parsing the result
+                try:
+                    result_data = json.loads(result) if isinstance(result, str) else result
+                    action_succeeded = result_data.get("success", False) if isinstance(result_data, dict) else False
+                except:
+                    action_succeeded = "success" in result.lower() if isinstance(result, str) else False
+
+                if action_succeeded:
+                    # Send a STRONG message telling Gemini the action is DONE - don't try again
+                    await self._active_session.send(
+                        input=types.LiveClientContent(
+                            turns=[
+                                types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=f"[SYSTEM: ACTION COMPLETED SUCCESSFULLY. {tool_name} was executed and worked. Result: {result[:100]}. DO NOT try to execute this action again. Just tell the user it's done.]")]
+                                )
+                            ],
+                            turn_complete=True
+                        ),
+                        end_of_turn=True
+                    )
+                    logger.info(f"[FALLBACK] Notified Gemini of successful execution - action complete")
+                else:
+                    # Action failed - tell Gemini to try with coordinates
+                    await self._active_session.send(
+                        input=types.LiveClientContent(
+                            turns=[
+                                types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=f"[SYSTEM: ACTION FAILED. {tool_name} could not find the element. LOOK AT THE SCREEN, identify the x,y coordinates of the target, and use click_at_coordinates(x=X, y=Y) or move_mouse_to_coordinates(x=X, y=Y) instead.]")]
+                                )
+                            ],
+                            turn_complete=True
+                        ),
+                        end_of_turn=True
+                    )
+                    logger.info(f"[FALLBACK] Action failed - told Gemini to use coordinates")
                 return
 
             except Exception as e:
@@ -2042,13 +2159,36 @@ ARIA_GEMINI_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "click_element",
-        "description": "Click on a UI element by name. PREFERRED for dock icons and apps. Uses macOS Accessibility API for accurate positioning.",
+        "description": "Click on a DOCK ICON by name. ONLY for dock icons at bottom of screen. Uses macOS Accessibility API.",
         "parameters": {
             "type": "object",
             "properties": {
-                "element": {"type": "string", "description": "Name of the element to click"}
+                "element": {"type": "string", "description": "Name of the dock icon to click"}
             },
             "required": ["element"]
+        }
+    },
+    {
+        "name": "click_target",
+        "description": "PREFERRED for clicking UI elements. Describe what to click and Claude's vision will find it precisely. Use for buttons, links, text, icons, etc.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Description of what to click (e.g., 'the send button', 'the blue Submit link', 'the X close icon')"},
+                "button": {"type": "string", "description": "Mouse button: left, right, or middle", "default": "left"}
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "move_to_target",
+        "description": "PREFERRED for moving mouse to UI elements. Describe where to move and Claude's vision will find it precisely.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Description of where to move mouse (e.g., 'the user name in top right', 'the search box', 'the red X button')"}
+            },
+            "required": ["target"]
         }
     },
     {

@@ -67,11 +67,18 @@ class VoiceBridge:
     """
 
     # Action keywords that indicate the user wants to execute a command
+    # NOTE: Avoid ambiguous single words like "tab" (tab key? new tab?) or "enter" (enter key? enter text?)
+    # These get false positives from fragmented speech like "No t" → "tab"
+    # NOTE: "move" removed - let Gemini handle move_mouse commands since VoiceBridge
+    # doesn't have a MOVE intent and can't use coordinate-based movement
+    # NOTE: "click", "double click", "right click" removed - let Gemini handle with
+    # click_target tool which uses Claude's precise vision for accurate clicking
     ACTION_KEYWORDS = [
-        'click', 'open', 'type', 'scroll', 'close', 'copy', 'paste',
-        'undo', 'save', 'tab', 'go to', 'navigate', 'launch', 'start',
-        'press', 'hit', 'enter', 'select', 'new tab', 'close tab',
-        'switch', 'write', 'input', 'quit', 'exit'
+        'open', 'type', 'scroll', 'close', 'copy', 'paste',
+        'undo', 'save', 'go to', 'navigate', 'launch', 'start',
+        'press', 'hit', 'select', 'new tab', 'close tab',
+        'switch', 'write', 'input', 'quit', 'exit',
+        'drag', 'drop', 'minimize', 'maximize', 'focus'
     ]
 
     def __init__(self, use_ai_fallback: bool = True):
@@ -211,11 +218,63 @@ class VoiceBridge:
         if not cleaned_lower:
             return False
 
+        # Keywords that require a target (incomplete without it)
+        keywords_needing_target = {
+            'click on': 1,  # needs at least 1 word after "click on"
+            'click': 1,     # needs at least 1 word after "click"
+            'open': 1,      # needs at least 1 word after "open"
+            'type': 1,      # needs at least 1 word after "type"
+            'go to': 1,     # needs at least 1 word after "go to"
+            'navigate to': 1,
+            'search': 1,    # needs at least 1 word after "search"
+            'move': 1,      # needs at least 1 word after "move"
+        }
+
+        # Check for conversational context markers that indicate this is NOT a command
+        # These words suggest the user is talking ABOUT actions, not requesting them
+        # Check BOTH the original text and cleaned text (original has more context)
+        text_lower = text.lower()
+        conversational_markers = [
+            'otherwise', "you'll", "you will", "would", "could", "might", "should",
+            "don't", "won't", "wouldn't", "couldn't", "shouldn't",
+            "if you", "when you", "before you", "after you",
+            "did you", "have you", "are you", "were you",
+            "why did", "why do", "what if", "instead of",
+            "going to", "about to", "trying to",
+        ]
+        for marker in conversational_markers:
+            # Check in original text (more context)
+            if marker in text_lower:
+                logger.debug(f"Conversational context detected ('{marker}'): {text[:50]}")
+                return False
+
         # Check if the cleaned text STARTS with an action keyword
         # This prevents false matches like "right below the start"
         for keyword in self.ACTION_KEYWORDS:
             # Check if text starts with the keyword (with word boundary)
             if cleaned_lower.startswith(keyword + ' ') or cleaned_lower == keyword:
+                # Check if this keyword needs a target
+                rest_after_keyword = cleaned_lower[len(keyword):].strip()
+
+                # Check for "keyword on" pattern (like "click on")
+                keyword_on = keyword + ' on'
+                if cleaned_lower.startswith(keyword_on):
+                    rest_after_on = cleaned_lower[len(keyword_on):].strip()
+                    # Needs at least one word after "on"
+                    if not rest_after_on or rest_after_on in ['the', 'a', 'an', 'my', 'your', 'this', 'that']:
+                        logger.debug(f"Incomplete command '{keyword} on' - waiting for target")
+                        return False
+
+                # Check if keyword needs a target
+                if keyword in keywords_needing_target:
+                    min_words = keywords_needing_target[keyword]
+                    words_after = rest_after_keyword.split()
+                    # Filter out articles/prepositions that don't count as targets
+                    meaningful_words = [w for w in words_after if w not in ['the', 'a', 'an', 'on', 'to', 'in', 'at', 'my', 'your']]
+                    if len(meaningful_words) < min_words:
+                        logger.debug(f"Incomplete command '{keyword}' - waiting for target (has {len(meaningful_words)} words, need {min_words})")
+                        return False
+
                 logger.debug(f"Text starts with action keyword '{keyword}': {cleaned}")
                 return True
             # Also check for patterns like "keyword something" at start

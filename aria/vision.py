@@ -219,12 +219,14 @@ class ClaudeVision:
             description: What to find (e.g., "the submit button", "the search field")
 
         Returns:
-            Dict with x, y coordinates if found, None otherwise
+            Dict with x, y coordinates (SCALED to actual screen) if found, None otherwise
         """
-        screenshot_b64 = self.screen.capture_to_base64()
+        result = self.screen.capture_to_base64_with_size()
 
-        if screenshot_b64 is None:
+        if result is None:
             return None
+
+        screenshot_b64, (screenshot_width, screenshot_height) = result
 
         try:
             response = self.client.messages.create(
@@ -263,7 +265,28 @@ Respond with ONLY the JSON, no other text.""",
 
             import json
             result = json.loads(response.content[0].text)
-            return result if result.get("found") else None
+
+            if result.get("found"):
+                # Scale coordinates from screenshot space to actual screen space
+                import pyautogui
+                screen_width, screen_height = pyautogui.size()
+
+                # Calculate scale factor
+                if screen_width > SCREENSHOT_MAX_WIDTH:
+                    scale_x = screen_width / screenshot_width
+                    scale_y = screen_height / screenshot_height
+                else:
+                    scale_x = 1.0
+                    scale_y = 1.0
+
+                # Scale the coordinates
+                original_x, original_y = result.get("x", 0), result.get("y", 0)
+                result["x"] = int(original_x * scale_x)
+                result["y"] = int(original_y * scale_y)
+                print(f"[Vision] Found '{description}' at ({original_x}, {original_y}) -> scaled to ({result['x']}, {result['y']})")
+                return result
+            else:
+                return None
 
         except Exception as e:
             print(f"Error finding element: {e}")

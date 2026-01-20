@@ -132,10 +132,133 @@ FRAGMENTED_WORDS = {
     "ju st": "just",
     "jus t": "just",
     "clo se": "close",
+    "clos e": "close",
     "ope n": "open",
+    "o pen": "open",
     "del ete": "delete",
+    "dele te": "delete",
     "se lect": "select",
+    "selec t": "select",
     "al l": "all",
+    # More fragments from live testing
+    "ye s": "yes",
+    "y es": "yes",
+    "nee d": "need",
+    "ne ed": "need",
+    "but ton": "button",
+    "butt on": "button",
+    "bu tton": "button",
+    # Box (from voice testing - "text box")
+    "bo x": "box",
+    "b ox": "box",
+    "clou d": "cloud",
+    "clo ud": "cloud",
+    "cl oud": "cloud",
+    # Icon (from voice testing)
+    "ico n": "icon",
+    "ic on": "icon",
+    "i con": "icon",
+    # Dock (from voice testing)
+    "doc k": "dock",
+    "do ck": "dock",
+    "d ock": "dock",
+    "scree n": "screen",
+    "scre en": "screen",
+    "win dow": "window",
+    "windo w": "window",
+    "brow ser": "browser",
+    "browse r": "browser",
+    "sear ch": "search",
+    "searc h": "search",
+    "se arch": "search",
+    # Mouse and movement
+    "mo use": "mouse",
+    "mou se": "mouse",
+    "mo uth": "mouse",  # common speech recognition error
+    "mous e": "mouse",
+    "mo ve": "move",
+    "mov e": "move",
+    "fir st": "first",
+    "firs t": "first",
+    "fi rst": "first",
+    "doub le": "double",
+    "dou ble": "double",
+    "doubl e": "double",
+    "rig ht": "right",
+    "righ t": "right",
+    "dra g": "drag",
+    "dr ag": "drag",
+    "dro p": "drop",
+    "dr op": "drop",
+    # URL/domain fragments (from voice testing)
+    "compa ss": "compass",
+    "comp ass": "compass",
+    "com pass": "compass",
+    "goo gle": "google",
+    "goog le": "google",
+    "go ogle": "google",
+    "face book": "facebook",
+    "faceb ook": "facebook",
+    "you tube": "youtube",
+    "yout ube": "youtube",
+    "git hub": "github",
+    "gith ub": "github",
+    "twit ter": "twitter",
+    "twitt er": "twitter",
+    "ama zon": "amazon",
+    "amaz on": "amazon",
+    "net flix": "netflix",
+    "netfl ix": "netflix",
+    "lin ked": "linked",
+    "link ed": "linked",
+    ". com": ".com",
+    ". org": ".org",
+    ". net": ".net",
+    ". io": ".io",
+    # More from voice testing
+    "que stion": "question",
+    "ques tion": "question",
+    "Cla ude": "Claude",
+    "Clau de": "Claude",
+    "cl aude": "claude",
+    "cla ude": "claude",
+    "Ar ya": "Arya",
+    "Ary a": "Arya",
+    "Ar ia": "Aria",
+    "Ari a": "Aria",
+    "vir tual": "virtual",
+    "virtu al": "virtual",
+    "ass istant": "assistant",
+    "assis tant": "assistant",
+    "as sistant": "assistant",
+    # More common words
+    "ex plain": "explain",
+    "expl ain": "explain",
+    "be cause": "because",
+    "becau se": "because",
+    "im prove": "improve",
+    "impro ve": "improve",
+    "ef fective": "effective",
+    "effec tive": "effective",
+    "con trol": "control",
+    "cont rol": "control",
+    "comp uter": "computer",
+    "compu ter": "computer",
+    # More from testing
+    "ha te": "hate",
+    "hat e": "hate",
+    "fo llow": "follow",
+    "fol low": "follow",
+    "did n't": "didn't",
+    "does n't": "doesn't",
+    "can n't": "can't",
+    "won n't": "won't",
+    "ver ify": "verify",
+    "veri fy": "verify",
+    "actua lly": "actually",
+    "actual ly": "actually",
+    "supp osed": "supposed",
+    "suppo sed": "supposed",
 }
 
 # Common speech-to-text errors and their corrections
@@ -164,6 +287,13 @@ SPEECH_CORRECTIONS = {
     "remmeber": "remember",
     "remeber": "remember",
     "recal": "recall",
+    # Dock variations (common speech errors)
+    "duck": "dock",
+    "duk": "dock",
+    "duc": "dock",
+    # Icon variations
+    "icone": "icon",
+    "ikon": "icon",
 }
 
 
@@ -202,9 +332,11 @@ def clean_voice_input(text: str) -> str:
         r'^hi\s*[,.]?\s*',
         r'^hello\s*[,.]?\s*',
         # Affirmations
-        r'^(?:yes|yeah|yep|sure|alright|right)\s*[,.]?\s*',
+        r'^(?:yes|yeah|yep|sure|alright|right|great|perfect|good|nice|awesome|cool)\s*[,.]?\s*',
         r'^okay\s*[,.]?\s*',
         r'^ok\s*[,.]?\s*',
+        # Repetition/clarification (when user repeats their command)
+        r'^(?:i said|i asked you to|i told you to|i wanted you to)\s+',
         # Questions/requests
         r'^(?:can you|could you|would you|will you)\s+(?:please\s+)?',
         r'^please\s+(?:can you|could you|would you|will you)\s+',
@@ -237,14 +369,26 @@ def clean_voice_input(text: str) -> str:
 
     action_keywords = ['open', 'click', 'scroll', 'type', 'close', 'go to', 'navigate',
                        'copy', 'paste', 'undo', 'redo', 'save', 'new tab', 'press',
-                       'launch', 'start', 'quit', 'exit', 'search', 'find']
+                       'launch', 'start', 'quit', 'exit', 'search', 'find', 'move',
+                       'double click', 'right click', 'drag', 'drop', 'select']
 
     # Clean sentence prefixes (affirmations, negations, etc.)
     # Use word boundary \b to prevent "no" from matching "now"
     sentence_prefixes = [
-        r'^(?:yes|yeah|yep|no|nope|okay|ok|sure|well|so|and|but|then)\b\s*[,.]?\s*',
+        r'^(?:yes|yeah|yep|no|nope|okay|ok|sure|well|so|and|but|then|great|perfect|good|nice|awesome|cool|alright|right)\b\s*[,.]?\s*',
         r'^now\s*[,.]?\s+',  # "now" must be followed by space after optional comma/period
         r'^(?:i think|i believe|i want|i need)\s+',
+        r'^(?:i said|i asked you to|i told you to)\s+',  # When user repeats their command
+    ]
+
+    # Patterns that contain an action - extract just the action part
+    # e.g., "you need to open X" -> "open X"
+    action_extraction_patterns = [
+        r'(?:you\s+)?(?:need|want|have)\s+to\s+',  # "you need to open" -> "open"
+        r'(?:can|could|would|will)\s+you\s+(?:please\s+)?',  # "can you open" -> "open"
+        r'(?:please\s+)?(?:go\s+ahead\s+and\s+)',  # "go ahead and open" -> "open"
+        r'(?:try|use)\s+(?:the\s+)?',  # "use the copy button" -> "copy button"
+        r'(?:i\s+said|i\s+asked\s+you\s+to|i\s+told\s+you\s+to)\s+',  # "I said open" -> "open"
     ]
 
     def clean_sentence(s: str) -> str:
@@ -254,11 +398,25 @@ def clean_voice_input(text: str) -> str:
             s = re.sub(pattern, '', s, flags=re.IGNORECASE).strip()
         return s
 
+    def extract_action(s: str) -> str:
+        """Extract action command from sentence patterns."""
+        s = s.strip()
+        for pattern in action_extraction_patterns:
+            match = re.search(pattern, s, flags=re.IGNORECASE)
+            if match:
+                # Return everything after the matched pattern
+                extracted = s[match.end():].strip()
+                if extracted:
+                    return extracted
+        return s
+
     # First pass: look for sentences that START with an action keyword (most reliable)
     for sentence in sentences:
         sentence = clean_sentence(sentence)
         if not sentence:
             continue
+        # Try to extract action from patterns like "you need to open X"
+        sentence = extract_action(sentence)
         sentence_lower = sentence.lower()
         for keyword in action_keywords:
             if sentence_lower.startswith(keyword + ' ') or sentence_lower == keyword:
@@ -274,6 +432,8 @@ def clean_voice_input(text: str) -> str:
         sentence = clean_sentence(sentence)
         if not sentence:
             continue
+        # Try to extract action from patterns
+        sentence = extract_action(sentence)
         sentence_lower = sentence.lower()
         for keyword in action_keywords:
             if keyword in sentence_lower:
@@ -526,6 +686,31 @@ def _clean_target(target: str, action: IntentType) -> str:
     if not target:
         return ""
 
+    target = target.strip()
+
+    # Special handling for URLs (NAVIGATE action)
+    # Extract just the URL/domain from noisy transcript text
+    if action == IntentType.NAVIGATE:
+        # First, normalize fragmented URLs (e.g., "compa ss.com" -> "compass.com")
+        target = normalize_speech(target)
+
+        # Try to extract a clean URL or domain from the text
+        # Pattern: domain.tld or full URL
+        url_pattern = r'((?:https?://)?(?:www\.)?[\w-]+(?:\.[\w-]+)+(?:/\S*)?)'
+        url_match = re.search(url_pattern, target, re.IGNORECASE)
+        if url_match:
+            target = url_match.group(1)
+            # Clean up any trailing punctuation or noise
+            target = re.sub(r'[.,;:!?\s]+$', '', target)
+            # Remove trailing words that got attached (e.g., "compass.com. no" -> "compass.com")
+            target = re.sub(r'\.\s+\w+$', '', target)
+            return target
+
+        # If no URL pattern found, clean up common noise
+        # Remove trailing sentence fragments
+        target = re.split(r'\.\s+', target)[0]  # Take first sentence
+        target = re.sub(r'[.,;:!?\s]+$', '', target)  # Clean trailing punctuation
+
     # Remove common noise words at the end
     noise_suffixes = [
         " icon", " button", " app", " application", " window",
@@ -534,7 +719,6 @@ def _clean_target(target: str, action: IntentType) -> str:
         " please", " for me",
     ]
 
-    target = target.strip()
     for suffix in noise_suffixes:
         if target.lower().endswith(suffix):
             target = target[:-len(suffix)].strip()

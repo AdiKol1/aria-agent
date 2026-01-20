@@ -2,22 +2,79 @@
 Aria Learning System
 
 Tracks task outcomes and learns from success/failure patterns.
-Enables Aria to improve over time.
+Enables Aria to proactively learn and improve over time.
+
+Features:
+1. Track action success/failure patterns
+2. Schedule proactive research tasks
+3. Suggest improvements based on patterns
 """
 
+import asyncio
 import json
+import threading
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any, TYPE_CHECKING
 
 from .config import DATA_PATH
-from .planner import Plan, PlanStep
+
+if TYPE_CHECKING:
+    from .planner import Plan
 
 
 # Learning data storage
 LEARNING_PATH = DATA_PATH / "learning"
 LEARNING_PATH.mkdir(parents=True, exist_ok=True)
+
+# Research schedule storage
+RESEARCH_SCHEDULE_FILE = LEARNING_PATH / "research_schedule.json"
+
+
+@dataclass
+class ResearchTask:
+    """A scheduled proactive research task."""
+    topic: str
+    query: str
+    interval_hours: int = 168  # Default: weekly (7 days)
+    last_run: Optional[datetime] = None
+    enabled: bool = True
+    category: str = "research"
+
+    def is_due(self) -> bool:
+        """Check if this research task is due to run."""
+        if not self.enabled:
+            return False
+        if self.last_run is None:
+            return True
+        next_run = self.last_run + timedelta(hours=self.interval_hours)
+        return datetime.now() >= next_run
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "query": self.query,
+            "interval_hours": self.interval_hours,
+            "last_run": self.last_run.isoformat() if self.last_run else None,
+            "enabled": self.enabled,
+            "category": self.category
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ResearchTask":
+        last_run = None
+        if data.get("last_run"):
+            last_run = datetime.fromisoformat(data["last_run"])
+        return cls(
+            topic=data["topic"],
+            query=data["query"],
+            interval_hours=data.get("interval_hours", 168),
+            last_run=last_run,
+            enabled=data.get("enabled", True),
+            category=data.get("category", "research")
+        )
 
 
 @dataclass
@@ -151,7 +208,7 @@ class LearningEngine:
         steps_succeeded: int,
         failure_reason: Optional[str] = None,
         approach_id: Optional[str] = None,
-        plan: Optional[Plan] = None
+        plan: Optional["Plan"] = None
     ):
         """
         Record the outcome of a task execution.
@@ -245,7 +302,7 @@ class LearningEngine:
         else:
             return "general"
 
-    def _learn_pattern(self, goal: str, plan: Plan):
+    def _learn_pattern(self, goal: str, plan: "Plan"):
         """Learn a successful pattern for future use."""
         pattern = self._goal_to_pattern(goal)
 
@@ -391,6 +448,199 @@ class LearningEngine:
                     })
 
         return suggestions
+
+    # ===== PROACTIVE RESEARCH SCHEDULING =====
+
+    def _load_research_schedule(self) -> None:
+        """Load research schedule from disk."""
+        if not hasattr(self, 'research_tasks'):
+            self.research_tasks: List[ResearchTask] = []
+
+        try:
+            if RESEARCH_SCHEDULE_FILE.exists():
+                with open(RESEARCH_SCHEDULE_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.research_tasks = [ResearchTask.from_dict(t) for t in data.get("tasks", [])]
+                    print(f"[Learning] Loaded {len(self.research_tasks)} research tasks")
+        except Exception as e:
+            print(f"[Learning] Error loading research schedule: {e}")
+
+    def _save_research_schedule(self) -> None:
+        """Save research schedule to disk."""
+        try:
+            data = {
+                "tasks": [t.to_dict() for t in self.research_tasks],
+                "updated_at": datetime.now().isoformat()
+            }
+            with open(RESEARCH_SCHEDULE_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[Learning] Error saving research schedule: {e}")
+
+    def schedule_research(
+        self,
+        topic: str,
+        query: str,
+        interval_hours: int = 168,
+        category: str = "research"
+    ) -> bool:
+        """
+        Schedule a recurring proactive research task.
+
+        This enables Aria to continuously learn about topics of interest,
+        building expertise over time without being asked.
+
+        Args:
+            topic: Short topic name (e.g., "TikTok trends")
+            query: Full search query to run
+            interval_hours: How often to research (default: weekly)
+            category: Memory category for storing results
+
+        Returns:
+            True if scheduled successfully
+
+        Example:
+            learning.schedule_research(
+                "Mac shortcuts",
+                "Best Mac keyboard shortcuts for productivity 2024",
+                interval_hours=336  # Every 2 weeks
+            )
+        """
+        if not hasattr(self, 'research_tasks'):
+            self._load_research_schedule()
+
+        # Check for duplicate topic
+        for task in self.research_tasks:
+            if task.topic.lower() == topic.lower():
+                print(f"[Learning] Research topic '{topic}' already scheduled")
+                return False
+
+        task = ResearchTask(
+            topic=topic,
+            query=query,
+            interval_hours=interval_hours,
+            category=category
+        )
+        self.research_tasks.append(task)
+        self._save_research_schedule()
+        print(f"[Learning] Scheduled proactive research: '{topic}' every {interval_hours} hours")
+        return True
+
+    def remove_research(self, topic: str) -> bool:
+        """Remove a scheduled research task."""
+        if not hasattr(self, 'research_tasks'):
+            self._load_research_schedule()
+
+        for i, task in enumerate(self.research_tasks):
+            if task.topic.lower() == topic.lower():
+                self.research_tasks.pop(i)
+                self._save_research_schedule()
+                print(f"[Learning] Removed research: '{topic}'")
+                return True
+        return False
+
+    def list_research_tasks(self) -> List[Dict[str, Any]]:
+        """List all scheduled research tasks with their status."""
+        if not hasattr(self, 'research_tasks'):
+            self._load_research_schedule()
+
+        return [
+            {
+                "topic": t.topic,
+                "query": t.query,
+                "interval_hours": t.interval_hours,
+                "enabled": t.enabled,
+                "is_due": t.is_due(),
+                "last_run": t.last_run.isoformat() if t.last_run else None
+            }
+            for t in self.research_tasks
+        ]
+
+    def run_due_research(self, web_search_fn: Callable[[str], str], memory=None) -> List[str]:
+        """
+        Run all due research tasks synchronously.
+
+        Args:
+            web_search_fn: Function to perform web searches
+            memory: AriaMemory instance for storing results
+
+        Returns:
+            List of topics that were researched
+        """
+        if not hasattr(self, 'research_tasks'):
+            self._load_research_schedule()
+
+        researched = []
+
+        for task in self.research_tasks:
+            if task.is_due():
+                print(f"[Learning] Running proactive research: {task.topic}")
+                try:
+                    # Perform the research
+                    result = web_search_fn(task.query)
+
+                    if result and memory:
+                        # Store the learning in memory
+                        fact = f"Research on '{task.topic}' ({datetime.now().strftime('%Y-%m-%d')}): {result[:500]}"
+                        memory.remember_fact(fact, task.category)
+                        print(f"[Learning] Stored research results for: {task.topic}")
+
+                    # Update last run time
+                    task.last_run = datetime.now()
+                    researched.append(task.topic)
+
+                except Exception as e:
+                    print(f"[Learning] Research error for '{task.topic}': {e}")
+
+        # Save updated schedule
+        if researched:
+            self._save_research_schedule()
+
+        return researched
+
+    def start_research_scheduler(
+        self,
+        web_search_fn: Callable[[str], str],
+        memory=None,
+        check_interval_minutes: int = 60
+    ) -> None:
+        """
+        Start a background scheduler for proactive research.
+
+        This runs in the background, periodically checking for due research
+        tasks and executing them automatically.
+
+        Args:
+            web_search_fn: Function to perform web searches
+            memory: AriaMemory instance for storing results
+            check_interval_minutes: How often to check for due tasks
+        """
+        if hasattr(self, '_scheduler_running') and self._scheduler_running:
+            print("[Learning] Research scheduler already running")
+            return
+
+        self._scheduler_running = True
+
+        def scheduler_loop():
+            while self._scheduler_running:
+                try:
+                    researched = self.run_due_research(web_search_fn, memory)
+                    if researched:
+                        print(f"[Learning] Completed proactive research on: {', '.join(researched)}")
+                except Exception as e:
+                    print(f"[Learning] Scheduler error: {e}")
+
+                # Wait for next check
+                time.sleep(check_interval_minutes * 60)
+
+        self._scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
+        self._scheduler_thread.start()
+        print(f"[Learning] Research scheduler started (checking every {check_interval_minutes} minutes)")
+
+    def stop_research_scheduler(self) -> None:
+        """Stop the background research scheduler."""
+        self._scheduler_running = False
+        print("[Learning] Research scheduler stopped")
 
 
 # Singleton

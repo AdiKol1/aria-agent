@@ -415,7 +415,13 @@ class RealtimeVoiceClient:
         # Transcription events
         elif event_type == "conversation.item.input_audio_transcription.failed":
             error = event.get("error", {})
+            error_msg = error.get("message", "")
             print(f"[RealtimeVoice] TRANSCRIPTION FAILED: {error}")
+
+            # Check for rate limit error - signal to fall back to traditional mode
+            if "429" in error_msg or "Too Many Requests" in error_msg:
+                print("[RealtimeVoice] Rate limit detected! Falling back to traditional voice mode...")
+                raise Exception("OpenAI Realtime API rate limit (429) - falling back to traditional voice")
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
@@ -985,14 +991,14 @@ ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "name": "hotkey",
-        "description": "Press a keyboard shortcut. Example: ['command', 'c'] for Cmd+C",
+        "description": "Press a keyboard shortcut. USE THIS FOR: new tab (['command','t']), close tab (['command','w']), new window (['command','n']), copy (['command','c']), paste (['command','v']), undo (['command','z']), save (['command','s']), find (['command','f']), select all (['command','a']), address bar (['command','l']). This is the fastest way to control apps.",
         "parameters": {
             "type": "object",
             "properties": {
                 "keys": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Keys to press together"
+                    "description": "Keys to press together, e.g. ['command', 't'] for new tab"
                 }
             },
             "required": ["keys"]
@@ -1065,6 +1071,90 @@ ARIA_REALTIME_TOOLS: List[Dict[str, Any]] = [
                 "n_results": {"type": "integer", "description": "Number of results to return"}
             },
             "required": ["query"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "web_search",
+        "description": "Search the web for current information. Use for questions about current events, weather, prices, facts, etc.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "double_click",
+        "description": "Double-click on a UI element by description. Use to open files, apps, or activate items.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "What to double-click"}
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "right_click",
+        "description": "Right-click on a UI element to open context menu.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "What to right-click"}
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "move_mouse",
+        "description": "Move mouse cursor to a UI element without clicking. Useful for hover effects or preparing for drag.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Where to move the mouse"}
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "drag",
+        "description": "Drag from one element to another. Use for drag-and-drop, resizing, or moving items.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_target": {"type": "string", "description": "Element to drag from"},
+                "to_target": {"type": "string", "description": "Element to drag to"}
+            },
+            "required": ["from_target", "to_target"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "get_mouse_position",
+        "description": "Get the current mouse cursor position on screen.",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "type": "function",
+        "name": "click_at_coordinates",
+        "description": "Click at specific x,y screen coordinates. Use when you know exact position.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate"},
+                "y": {"type": "integer", "description": "Y coordinate"},
+                "button": {"type": "string", "description": "Button: left, right, or middle"}
+            },
+            "required": ["x", "y"]
         }
     }
 ]

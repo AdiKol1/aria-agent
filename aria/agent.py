@@ -18,6 +18,7 @@ from .config import (
 )
 from .vision import get_claude_vision, get_screen_capture
 from .control import get_control
+from .core.vision_context import get_vision_context, VisionAwareExecutor
 from .memory import get_memory
 from .claude_bridge import get_claude_bridge
 from .intent import get_intent_engine, Intent
@@ -29,10 +30,31 @@ from .skills import (
     SkillContext, SkillResult, HookEvent, create_default_hooks
 )
 from .mcp_client import get_mcp_client, MCPClient
-from .gestures import (
-    get_gesture_controller, GestureController, GestureEvent,
-    Gesture, GestureAction
-)
+# Lazy import for gestures (mediapipe is heavy and can fail on startup)
+# Import will be done on first use via get_gesture_controller()
+GestureController = None
+GestureEvent = None
+Gesture = None
+GestureAction = None
+
+def get_gesture_controller():
+    """Lazy import and return gesture controller."""
+    global GestureController, GestureEvent, Gesture, GestureAction
+    if GestureController is None:
+        from .gestures import (
+            get_gesture_controller as _get_gesture_controller,
+            GestureController as _GestureController,
+            GestureEvent as _GestureEvent,
+            Gesture as _Gesture,
+            GestureAction as _GestureAction
+        )
+        GestureController = _GestureController
+        GestureEvent = _GestureEvent
+        Gesture = _Gesture
+        GestureAction = _GestureAction
+        return _get_gesture_controller()
+    from .gestures import get_gesture_controller as _get_gesture_controller
+    return _get_gesture_controller()
 from .reasoning import get_reasoner, RequestType, MultiModelReasoner
 from .lazy_anthropic import get_client as get_anthropic_client
 from .tool_search import get_tool_search_manager, TOOL_SEARCH_BETA, ToolSearchManager
@@ -136,6 +158,10 @@ class AriaAgent:
         self.vision = get_claude_vision()
         self.screen = get_screen_capture()
         self.control = get_control()
+
+        # Proactive Vision System - Aria now looks before she acts
+        self.vision_context = get_vision_context()
+        self.vision_executor = VisionAwareExecutor(self.vision_context, self.control)
         self.memory = get_memory()
         self.claude_bridge = get_claude_bridge()
         self.conversation_history: List[Dict[str, Any]] = []
@@ -189,6 +215,7 @@ class AriaAgent:
         print(f"Tool Search: {self.tool_search_manager.total_tool_count} tools ({self.tool_search_manager.deferred_tool_count} deferred)")
         print(f"Gesture recognition: available (call enable_gestures() to start)")
         print(f"Claude Code bridge ready")
+        print(f"PROACTIVE VISION: ENABLED - Aria now looks before every action")
 
         # Trigger session start hooks
         hook_result = self.hooks.trigger_session_start()
@@ -814,7 +841,13 @@ class AriaAgent:
 
         This is the original action-oriented flow, used only when user
         explicitly wants to perform an action on their computer.
+
+        PROACTIVE VISION: Always capture screen state at the START of any action request.
         """
+        # PROACTIVE VISION: Capture initial state before doing anything
+        initial_state = self.vision_context.capture_state(include_screenshot=True)
+        print(f"[{self.current_task_id}] [Vision] Initial state: mouse at {initial_state.mouse_position}, window: {initial_state.active_window}")
+
         # Quick classify for simple commands
         quick = self.intent_engine.quick_classify(user_input)
         if quick["type"] == "simple_action" and quick["confidence"] > 0.9:
@@ -859,10 +892,10 @@ class AriaAgent:
         if best_approach and best_approach["success_rate"] > 0.7:
             print(f"[{self.current_task_id}] Using proven approach (success rate: {best_approach['success_rate']:.0%})")
 
-        # Get screen description if needed
-        screen_description = None
-        if intent.requires_screen:
-            screen_description = self.vision.get_screen_context()
+        # PROACTIVE VISION: ALWAYS capture screen for action requests
+        # This ensures Aria always knows what's on screen before acting
+        screen_description = self.vision.get_screen_context()
+        print(f"[{self.current_task_id}] [Vision] Screen context captured for planning")
 
         plan = self.planner.plan(intent, screen_description)
         print(f"[{self.current_task_id}] Plan: {plan.complexity} ({len(plan.steps)} steps)")
@@ -902,8 +935,9 @@ class AriaAgent:
             content = []
             screenshot_b64 = None
 
-            # Always capture screenshot for iterations 2+ (need to verify actions)
-            should_capture = include_screen or iteration > 1
+            # PROACTIVE VISION: ALWAYS capture screenshot for action execution
+            # Aria must see the screen before deciding what to do
+            should_capture = True  # Always capture - vision is critical for actions
 
             if should_capture:
                 screenshot_b64, image_size = self.screen.capture_to_base64_with_size()
@@ -1151,41 +1185,70 @@ class AriaAgent:
         return scaled_x, scaled_y
 
     def _execute_action(self, action: dict) -> bool:
-        """Execute a single action."""
+        """Execute a single action with proactive vision awareness.
+
+        Aria now LOOKS before she acts - capturing screen state before
+        every action and verifying after.
+        """
         action_type = action.get("action")
 
         try:
             if action_type == "click":
                 x, y = self._scale_coordinates(action["x"], action["y"])
-                return self.control.click(x, y)
+                # Vision-aware click - captures before/after state
+                ctx = self.vision_executor.click(x, y)
+                if ctx.before_state:
+                    print(f"[Vision] Click at ({x},{y}) | Mouse was at {ctx.before_state.mouse_position} | Window: {ctx.before_state.active_window}")
+                return ctx.success
 
             elif action_type == "double_click":
                 x, y = self._scale_coordinates(action["x"], action["y"])
-                return self.control.double_click(x, y)
+                ctx = self.vision_executor.double_click(x, y)
+                if ctx.before_state:
+                    print(f"[Vision] Double-click at ({x},{y}) | Window: {ctx.before_state.active_window}")
+                return ctx.success
 
             elif action_type == "right_click":
                 x, y = self._scale_coordinates(action["x"], action["y"])
-                return self.control.right_click(x, y)
+                ctx = self.vision_executor.right_click(x, y)
+                return ctx.success
 
             elif action_type == "type":
-                return self.control.type_text(action["text"])
+                ctx = self.vision_executor.type_text(action["text"])
+                if ctx.before_state:
+                    print(f"[Vision] Typing in: {ctx.before_state.active_window}")
+                return ctx.success
 
             elif action_type == "press":
-                return self.control.press_key(action["key"])
+                ctx = self.vision_executor.press_key(action["key"])
+                return ctx.success
 
             elif action_type == "hotkey":
-                return self.control.hotkey(*action["keys"])
+                ctx = self.vision_executor.hotkey(*action["keys"])
+                return ctx.success
 
             elif action_type == "scroll":
                 x = action.get("x")
                 y = action.get("y")
-                return self.control.scroll(action["amount"], x, y)
+                ctx = self.vision_executor.scroll(action["amount"], x, y)
+                if ctx.before_state and ctx.after_state:
+                    changed = self.vision_context.screen_changed(ctx.before_state, ctx.after_state)
+                    print(f"[Vision] Scroll | Screen changed: {changed}")
+                return ctx.success
 
             elif action_type == "open_app":
-                return self.control.open_app(action["app"])
+                # Capture state before opening app
+                before = self.vision_context.capture_state()
+                result = self.control.open_app(action["app"])
+                after = self.vision_context.capture_state()
+                print(f"[Vision] Open app '{action['app']}' | Was in: {before.active_window}")
+                return result
 
             elif action_type == "open_url":
-                return self.control.open_url(action["url"])
+                before = self.vision_context.capture_state()
+                result = self.control.open_url(action["url"])
+                print(f"[Vision] Open URL | Was in: {before.active_window}")
+                return result
 
             elif action_type == "wait":
                 import time

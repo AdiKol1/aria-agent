@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any, List
 
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, SCREENSHOT_MAX_WIDTH
 from .lazy_anthropic import get_client as get_anthropic_client
 from .vision import ScreenCapture
 from .control import ComputerControl
@@ -47,10 +47,33 @@ class VisionActionExecutor:
         self.max_retries = 3
         self.last_screen_state: Optional[str] = None
 
-    def _capture_screen_b64(self) -> Optional[Tuple[str, Tuple[int, int]]]:
-        """Capture screen and return (base64, (width, height))."""
+        # Screen caching to avoid redundant captures
+        self._screen_cache: Optional[Tuple[str, Tuple[int, int]]] = None
+        self._screen_cache_time: float = 0
+        self._screen_cache_ttl: float = 2.0  # Cache valid for 2 seconds
+
+    def _capture_screen_b64(self, use_cache: bool = True) -> Optional[Tuple[str, Tuple[int, int]]]:
+        """Capture screen and return (base64, (width, height)).
+
+        Uses caching to avoid redundant captures within TTL window.
+        """
+        now = time.time()
+
+        # Return cached if still valid
+        if use_cache and self._screen_cache and (now - self._screen_cache_time) < self._screen_cache_ttl:
+            print("[ActionExecutor] Using cached screen capture")
+            return self._screen_cache
+
+        # Capture new screen
         result = self.screen.capture_to_base64_with_size()
+        if result:
+            self._screen_cache = result
+            self._screen_cache_time = now
         return result
+
+    def invalidate_screen_cache(self):
+        """Invalidate screen cache after an action that changes the screen."""
+        self._screen_cache = None
 
     def _ask_claude_vision(self, image_b64: str, prompt: str) -> str:
         """Ask Claude to analyze an image and respond."""
@@ -89,17 +112,17 @@ class VisionActionExecutor:
             description: What to find (e.g., "the File menu", "the search box")
 
         Returns:
-            Dict with x, y coordinates and element info, or None if not found.
+            Dict with x, y coordinates (SCALED to actual screen) and element info, or None if not found.
         """
         result = self._capture_screen_b64()
         if not result:
             return None
 
-        image_b64, (width, height) = result
+        image_b64, (screenshot_width, screenshot_height) = result
 
         prompt = f"""Find the UI element: "{description}"
 
-Screen size: {width}x{height} pixels
+Screen size: {screenshot_width}x{screenshot_height} pixels
 
 If you can find it, respond with ONLY a JSON object like this:
 {{"found": true, "x": 500, "y": 300, "element": "File menu button", "confidence": "high"}}
@@ -113,6 +136,7 @@ If you cannot find it, respond with:
 Respond with ONLY the JSON, no other text."""
 
         response = self._ask_claude_vision(image_b64, prompt)
+        print(f"[ActionExecutor] Claude Vision response for '{description}': {response[:200]}...")
 
         try:
             # Extract JSON from response
@@ -122,7 +146,38 @@ Respond with ONLY the JSON, no other text."""
                 if response.startswith("json"):
                     response = response[4:]
             result = json.loads(response)
-            return result if result.get("found") else None
+
+            if result.get("found"):
+                # Scale coordinates from screenshot space to actual screen space
+                # Screenshots may be resized to SCREENSHOT_MAX_WIDTH
+                screen_width = self.control.screen_width
+                screen_height = self.control.screen_height
+
+                # Calculate scale factor
+                if screen_width > SCREENSHOT_MAX_WIDTH:
+                    scale_x = screen_width / screenshot_width
+                    scale_y = screen_height / screenshot_height
+                else:
+                    scale_x = 1.0
+                    scale_y = 1.0
+
+                # Scale the coordinates
+                original_x, original_y = result.get("x", 0), result.get("y", 0)
+                result["x"] = int(original_x * scale_x)
+                result["y"] = int(original_y * scale_y)
+                result["original_coords"] = [original_x, original_y]
+                result["scale_factor"] = [scale_x, scale_y]
+
+                print(f"[ActionExecutor] Found '{description}' at ({original_x}, {original_y}) -> scaled to ({result['x']}, {result['y']})")
+                return result
+            else:
+                # Log why element wasn't found
+                reason = result.get("reason", "unknown")
+                suggestions = result.get("suggestions", [])
+                print(f"[ActionExecutor] Could not find '{description}': {reason}")
+                if suggestions:
+                    print(f"[ActionExecutor] Suggestions: {suggestions}")
+                return None
         except json.JSONDecodeError:
             print(f"Failed to parse element location: {response}")
             return None
@@ -325,14 +380,15 @@ Be accurate - only say verified:true if you can clearly see the expected result.
             details={"text": text, "field": field_description}
         )
 
-    def execute_task(self, task_description: str) -> ActionResult:
+    def execute_task(self, task_description: str, verify: bool = False) -> ActionResult:
         """Execute a high-level task using vision guidance.
 
-        This method analyzes the screen, plans the steps, and executes them
-        with verification.
+        OPTIMIZED: Single vision call provides coordinates directly.
+        No redundant find_element calls during execution.
 
         Args:
             task_description: What the user wants to do (e.g., "open a new Chrome window")
+            verify: Whether to verify the result (adds latency)
 
         Returns:
             ActionResult with success status and details.
@@ -347,37 +403,33 @@ Be accurate - only say verified:true if you can clearly see the expected result.
 
         image_b64, (width, height) = result
 
+        # OPTIMIZED PROMPT: Get coordinates directly, no separate find_element calls needed
         prompt = f"""I need to: "{task_description}"
 
 Screen size: {width}x{height} pixels
 
-Look at this screenshot and tell me exactly what steps I should take to accomplish this task.
-Consider the current state of the screen - what app is open, what's visible, etc.
+Look at this screenshot and plan the steps. For EACH click action, provide the EXACT x,y coordinates.
 
-IMPORTANT: For click actions, provide a clear TARGET DESCRIPTION - this is the most critical part!
-The system will use vision to find the element at execution time, so describe what to click clearly.
-
-Respond with a JSON object containing the steps:
+Respond with a JSON object:
 {{
-    "current_state": "description of what's currently on screen",
+    "current_state": "brief description",
     "can_proceed": true/false,
     "steps": [
-        {{"action": "click", "target": "clear description like: the plus button in the toolbar, the File menu, the red close button"}},
+        {{"action": "click", "x": 500, "y": 300, "description": "clicking the File menu"}},
         {{"action": "type", "text": "text to type"}},
         {{"action": "hotkey", "keys": ["command", "n"]}},
-        {{"action": "wait", "seconds": 0.5}}
+        {{"action": "wait", "seconds": 0.3}}
     ],
-    "expected_result": "what should be visible after completing these steps"
+    "expected_result": "what should happen"
 }}
 
-CRITICAL FOR CLICKS:
-- "target" must be a CLEAR, SPECIFIC description of the UI element
-- Examples: "the plus (+) button in the Calendar toolbar", "the File menu in the menu bar"
-- The system will use vision to find the exact location, so description quality matters!
+CRITICAL:
+- For EVERY click, provide exact x,y pixel coordinates of the element's CENTER
+- Look carefully at the screenshot to find precise positions
+- Prefer keyboard shortcuts (hotkey) over clicks when possible - they're faster and more reliable
+- Keep steps minimal - don't over-complicate
 
-If the task cannot be done from the current screen state, explain why and set can_proceed to false.
-
-Respond with ONLY the JSON, no other text."""
+Respond with ONLY the JSON."""
 
         response = self._ask_claude_vision(image_b64, prompt)
 
@@ -403,49 +455,70 @@ Respond with ONLY the JSON, no other text."""
                 retry_suggested=True
             )
 
-        # Execute each step
+        # Calculate scale factors for coordinate scaling
+        screen_width = self.control.screen_width
+        screen_height = self.control.screen_height
+        if screen_width > SCREENSHOT_MAX_WIDTH:
+            scale_x = screen_width / width
+            scale_y = screen_height / height
+        else:
+            scale_x = 1.0
+            scale_y = 1.0
+
+        # Execute each step - FAST: use coordinates directly from plan (with scaling)
         steps = plan.get("steps", [])
         for i, step in enumerate(steps):
             action = step.get("action")
-            print(f"[ActionExecutor] Step {i+1}/{len(steps)}: {action} - {step}")
+            desc = step.get("description", "")
+            print(f"[ActionExecutor] Step {i+1}/{len(steps)}: {action} {desc}")
 
             try:
                 if action == "click":
-                    # Use vision-guided clicking with target description
-                    target = step.get("target", "")
-                    if target:
-                        # Re-capture screen and find element with vision
-                        element = self.find_element(target)
-                        if element:
-                            x, y = element["x"], element["y"]
-                            print(f"[ActionExecutor] Vision found '{target}' at ({x}, {y})")
-                            self.control.click(x, y)
-                        else:
-                            # Fallback to provided coordinates if vision fails
-                            x, y = step.get("x", 0), step.get("y", 0)
-                            print(f"[ActionExecutor] Vision failed, using fallback coords ({x}, {y})")
-                            if x > 0 and y > 0:
-                                self.control.click(x, y)
-                            else:
-                                print(f"[ActionExecutor] Skipping click - no valid coordinates")
+                    # OPTIMIZED: Use coordinates directly from plan (with scaling)
+                    x, y = step.get("x", 0), step.get("y", 0)
+                    if x > 0 and y > 0:
+                        scaled_x = int(x * scale_x)
+                        scaled_y = int(y * scale_y)
+                        print(f"[ActionExecutor] Click at ({x}, {y}) -> scaled to ({scaled_x}, {scaled_y})")
+                        self.control.click(scaled_x, scaled_y)
                     else:
-                        # No target description, use raw coordinates
-                        x, y = step.get("x", 0), step.get("y", 0)
-                        self.control.click(x, y)
+                        print(f"[ActionExecutor] Skipping click - no coordinates provided")
+
+                elif action == "double_click":
+                    x, y = step.get("x", 0), step.get("y", 0)
+                    if x > 0 and y > 0:
+                        scaled_x = int(x * scale_x)
+                        scaled_y = int(y * scale_y)
+                        self.control.double_click(scaled_x, scaled_y)
+
+                elif action == "right_click":
+                    x, y = step.get("x", 0), step.get("y", 0)
+                    if x > 0 and y > 0:
+                        scaled_x = int(x * scale_x)
+                        scaled_y = int(y * scale_y)
+                        self.control.right_click(scaled_x, scaled_y)
+
                 elif action == "type":
                     self.control.type_text(step.get("text", ""))
+
                 elif action == "hotkey":
                     keys = step.get("keys", [])
-                    self.control.hotkey(keys)
+                    if isinstance(keys, list):
+                        self.control.hotkey(*keys)
+                    else:
+                        print(f"[ActionExecutor] Invalid hotkey format: {keys}")
+
                 elif action == "press_key":
                     self.control.press_key(step.get("key", ""))
+
                 elif action == "wait":
-                    time.sleep(step.get("seconds", 0.5))
+                    time.sleep(step.get("seconds", 0.3))
+
                 elif action == "scroll":
                     self.control.scroll(step.get("amount", 0))
 
-                # Small delay between actions
-                time.sleep(0.2)
+                # Minimal delay between actions (UI needs time to respond)
+                time.sleep(0.15)
 
             except Exception as e:
                 return ActionResult(
@@ -455,27 +528,28 @@ Respond with ONLY the JSON, no other text."""
                     retry_suggested=True
                 )
 
-        # Verify the result
-        expected = plan.get("expected_result", "")
-        if expected:
-            time.sleep(0.5)  # Wait for UI to settle
-            if self.verify_action(expected):
-                return ActionResult(
-                    success=True,
-                    message=f"Task completed: {task_description}",
-                    details={"steps_executed": len(steps), "verification": "passed"}
-                )
-            else:
-                return ActionResult(
-                    success=False,
-                    message=f"Task executed but verification failed. Expected: {expected}",
-                    details={"steps_executed": len(steps), "verification": "failed"},
-                    retry_suggested=True
-                )
+        # Only verify if explicitly requested (saves 1-2 seconds)
+        if verify:
+            expected = plan.get("expected_result", "")
+            if expected:
+                time.sleep(0.3)
+                if self.verify_action(expected):
+                    return ActionResult(
+                        success=True,
+                        message=f"Task completed and verified: {task_description}",
+                        details={"steps_executed": len(steps), "verification": "passed"}
+                    )
+                else:
+                    return ActionResult(
+                        success=False,
+                        message=f"Verification failed. Expected: {expected}",
+                        details={"steps_executed": len(steps), "verification": "failed"},
+                        retry_suggested=True
+                    )
 
         return ActionResult(
             success=True,
-            message=f"Task completed: {task_description}",
+            message=f"Completed {len(steps)} steps for: {task_description}",
             details={"steps_executed": len(steps)}
         )
 

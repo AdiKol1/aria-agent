@@ -20,7 +20,17 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import sounddevice as sd
-from openai import OpenAI
+
+# Lazy import OpenAI to avoid startup hang when using Gemini
+OpenAI = None
+
+def _get_openai_client(api_key):
+    """Lazily import and create OpenAI client only when needed."""
+    global OpenAI
+    if OpenAI is None:
+        from openai import OpenAI as _OpenAI
+        OpenAI = _OpenAI
+    return OpenAI(api_key=api_key)
 
 from .config import (
     OPENAI_API_KEY,
@@ -38,7 +48,8 @@ class VoiceInterface:
     """Handles voice input and output."""
 
     def __init__(self):
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        # Lazy load OpenAI client only when this class is used
+        self.client = _get_openai_client(OPENAI_API_KEY)
         self.is_listening = False
         self.is_speaking = False
         self._audio_queue: queue.Queue = queue.Queue()
@@ -62,7 +73,7 @@ class VoiceInterface:
         audio_data = self._record_until_silence(
             timeout,
             silence_threshold,
-            silence_duration=0.7  # Shorter silence to end recording faster
+            silence_duration=0.5  # Reduced from 0.7 for faster response
         )
 
         self.is_listening = False
@@ -129,7 +140,9 @@ class VoiceInterface:
                 return True
 
         # Known Whisper hallucination phrases (often from background noise)
+        # Includes YouTube/media phrases that Whisper hallucinates from TV/videos
         hallucination_phrases = [
+            # YouTube/video hallucinations
             "thanks for watching",
             "subscribe",
             "like and subscribe",
@@ -137,10 +150,35 @@ class VoiceInterface:
             "please subscribe",
             "don't forget to subscribe",
             "hit the bell",
+            "smash that like button",
+            "leave a comment",
+            "check out my other videos",
+            "link in the description",
+            # TV/media audio hallucinations
             "チャンネル登録",  # Japanese "channel subscription"
             "novo notebook",  # Portuguese tech review
             "music playing",
             "background music",
+            "applause",
+            "laughter",
+            "[music]",
+            "[applause]",
+            "(music)",
+            "♪",
+            # Generic filler hallucinations
+            "thank you",
+            "thank you for watching",
+            "you guys are amazing",
+            "also a self-evaluation",
+            "self-evaluation",
+            "nice",
+            "bye",
+            "goodbye",
+            "okay",
+            "alright",
+            "um",
+            "uh",
+            "hmm",
         ]
         text_lower = text.lower()
         for phrase in hallucination_phrases:
@@ -150,6 +188,21 @@ class VoiceInterface:
         # Very short text that's likely noise
         words = text.split()
         if len(words) <= 1 and len(text) < 5:
+            return True
+
+        # Check for repeated words (e.g., "test test test test")
+        if len(words) >= 3:
+            unique_words = set(w.lower().strip('.,!?') for w in words)
+            if len(unique_words) == 1:
+                return True
+
+        # Check for mostly punctuation or single characters
+        alpha_chars = sum(1 for c in text if c.isalpha())
+        if alpha_chars < 3:
+            return True
+
+        # Very short text (< 2 words, < 8 chars) that's not a clear command
+        if len(words) <= 2 and len(text) < 8:
             return True
 
         return False
@@ -162,6 +215,9 @@ class VoiceInterface:
             text: Text to speak
             voice: Voice to use (alloy, echo, fable, onyx, nova, shimmer)
                    nova is faster and more natural for conversation
+
+        # TODO: Implement streaming TTS for lower latency
+        # Stream Claude responses to TTS instead of waiting for full response
         """
         if not text:
             return False
@@ -220,26 +276,41 @@ class VoiceInterface:
         self,
         timeout: float,
         silence_threshold: float,
-        silence_duration: float = 1.0
+        silence_duration: float = 0.5  # Reduced from 1.0 for faster response
     ) -> Optional[np.ndarray]:
-        """Record audio until silence is detected."""
+        """Record audio until silence is detected with improved VAD."""
         frames = []
         silence_frames = 0
         frames_per_second = VOICE_SAMPLE_RATE
         silence_frames_needed = int(silence_duration * frames_per_second / 1024)
 
+        # Adaptive threshold - start higher, adjust based on ambient noise
+        ambient_samples = []
+        adaptive_threshold = silence_threshold
+
         start_time = time.time()
         speech_started = False
 
         def callback(indata, frame_count, time_info, status):
-            nonlocal silence_frames, speech_started
+            nonlocal silence_frames, speech_started, adaptive_threshold, ambient_samples
             if status:
                 print(f"Audio status: {status}")
 
-            # Calculate RMS
+            # Calculate RMS energy
             rms = np.sqrt(np.mean(indata**2))
 
-            if rms > silence_threshold:
+            # Collect ambient noise samples for first 0.3 seconds to calibrate
+            if time.time() - start_time < 0.3 and not speech_started:
+                ambient_samples.append(rms)
+                if len(ambient_samples) >= 10:
+                    # Set adaptive threshold slightly above ambient noise
+                    ambient_level = np.mean(ambient_samples)
+                    adaptive_threshold = max(silence_threshold, ambient_level * 1.5)
+
+            # Use adaptive threshold for speech detection
+            effective_threshold = adaptive_threshold if adaptive_threshold > 0 else silence_threshold
+
+            if rms > effective_threshold:
                 speech_started = True
                 silence_frames = 0
             elif speech_started:

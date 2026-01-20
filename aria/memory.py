@@ -471,6 +471,209 @@ Respond with ONLY the JSON, no other text."""
             print(f"Error getting facts: {e}")
             return []
 
+    def get_startup_context(self, max_facts: int = 15, max_procedures: int = 5) -> str:
+        """
+        Get general context to inject at conversation start.
+
+        This provides Aria with relevant knowledge about the user
+        BEFORE the conversation begins, enabling her to be more
+        personalized and effective from the first interaction.
+
+        Args:
+            max_facts: Maximum number of facts to include
+            max_procedures: Maximum number of procedures to include
+
+        Returns:
+            Formatted context string with user knowledge
+        """
+        context_parts = []
+
+        try:
+            # CRITICAL: First, search for identity/name facts specifically
+            identity_facts = []
+            try:
+                name_results = self.facts.query(
+                    query_texts=["user's name is called prefer to be called"],
+                    n_results=10
+                )
+                if name_results and name_results['documents'] and name_results['documents'][0]:
+                    for doc in name_results['documents'][0]:
+                        doc_lower = doc.lower()
+                        # Only include actual identity facts, not action outcomes
+                        if 'action_outcome' not in doc_lower and any(kw in doc_lower for kw in ['name is', 'called', 'prefer']):
+                            identity_facts.append(f"- {doc}")
+            except Exception as e:
+                print(f"Error searching identity facts: {e}")
+
+            # Get user preferences and facts
+            all_facts = self.get_all_facts()
+            if all_facts:
+                # Prioritize preferences and personal info, but filter out action_outcomes
+                preference_facts = []
+                personal_facts = []
+                other_facts = []
+
+                for fact in all_facts[:max_facts * 3]:  # Get more, then filter
+                    fact_lower = fact.lower()
+                    # Skip action_outcome entries - they clutter the context
+                    if fact_lower.startswith('action ') or 'succeeded with' in fact_lower or 'failed with' in fact_lower:
+                        continue
+                    if any(word in fact_lower for word in ['prefer', 'like', 'favorite', 'always', 'usually', 'wants']):
+                        if f"- {fact}" not in identity_facts:  # Avoid duplicates
+                            preference_facts.append(f"- {fact}")
+                    elif any(word in fact_lower for word in ['name', 'called', 'personal', 'knows', 'has dog', 'has cat']):
+                        if f"- {fact}" not in identity_facts:  # Avoid duplicates
+                            personal_facts.append(f"- {fact}")
+                    else:
+                        other_facts.append(f"- {fact}")
+
+                # Identity first, then preferences, then personal, then others
+                selected = identity_facts[:3] + preference_facts[:5] + personal_facts[:4] + other_facts[:3]
+                if selected:
+                    context_parts.append("## What I Know About You\n" + "\n".join(selected[:max_facts]))
+
+            # Get learned procedures (things I know how to do)
+            if self.procedures.count() > 0:
+                results = self.procedures.get(limit=max_procedures)
+                if results and results['documents']:
+                    procedures = [f"- {doc}" for doc in results['documents']]
+                    context_parts.append("## Procedures I've Learned\n" + "\n".join(procedures))
+
+            # Get recent interaction insights (pattern recognition)
+            if self.interactions.count() > 0:
+                results = self.interactions.get(limit=5)
+                if results and results['metadatas']:
+                    # Look for successful patterns
+                    successes = []
+                    for i, meta in enumerate(results['metadatas']):
+                        if meta.get('outcome') == 'success':
+                            summary = results['documents'][i] if results['documents'] else ""
+                            if summary:
+                                successes.append(f"- {summary}")
+                    if successes:
+                        context_parts.append("## Recent Successful Interactions\n" + "\n".join(successes[:3]))
+
+        except Exception as e:
+            print(f"Error getting startup context: {e}")
+
+        if context_parts:
+            return "\n\n".join(context_parts)
+        return ""
+
+    def record_action_outcome(self, action_name: str, action_args: dict, success: bool, context: str = "") -> None:
+        """
+        Record the outcome of an action for learning what works.
+
+        This builds a database of what actions succeed/fail in what contexts,
+        enabling Aria to choose better approaches over time.
+
+        Args:
+            action_name: The action/tool that was used (e.g., "hotkey", "click")
+            action_args: The arguments passed to the action
+            success: Whether the action succeeded
+            context: Additional context (e.g., active app, user goal)
+        """
+        try:
+            # Create action signature for pattern matching
+            args_summary = json.dumps(action_args, sort_keys=True)[:200]  # Truncate long args
+            action_signature = f"{action_name}:{args_summary}"
+
+            # Store as a fact with special format for action tracking
+            outcome = "succeeded" if success else "failed"
+            fact = f"Action {action_name} {outcome}"
+            if action_args:
+                fact += f" with {args_summary}"
+            if context:
+                fact += f" in context: {context}"
+
+            # Use category "action_outcome" for easy retrieval
+            self.remember_fact(fact, "action_outcome")
+
+            print(f"[Learning] Recorded action outcome: {action_name} -> {outcome}")
+
+        except Exception as e:
+            print(f"Error recording action outcome: {e}")
+
+    def get_action_success_rate(self, action_name: str, similar_args: dict = None) -> Optional[dict]:
+        """
+        Get the historical success rate for an action type.
+
+        Args:
+            action_name: The action to check
+            similar_args: Optional args to match similar past actions
+
+        Returns:
+            Dict with success_rate, total_count, and recent_outcomes
+        """
+        try:
+            # Search for this action type in outcomes
+            query = f"Action {action_name}"
+            results = self.facts.query(
+                query_texts=[query],
+                n_results=20,
+                where={"category": "action_outcome"} if self.facts.count() > 0 else None
+            )
+
+            if not results or not results['documents'] or not results['documents'][0]:
+                return None
+
+            outcomes = results['documents'][0]
+            successes = sum(1 for o in outcomes if "succeeded" in o.lower())
+            failures = sum(1 for o in outcomes if "failed" in o.lower())
+            total = successes + failures
+
+            if total == 0:
+                return None
+
+            return {
+                "action": action_name,
+                "success_rate": successes / total,
+                "successes": successes,
+                "failures": failures,
+                "total": total,
+                "recent_outcomes": outcomes[:5]
+            }
+
+        except Exception as e:
+            print(f"Error getting action success rate: {e}")
+            return None
+
+    def get_best_approach(self, goal: str) -> Optional[str]:
+        """
+        Suggest the best approach for a goal based on past success rates.
+
+        Args:
+            goal: What the user wants to accomplish
+
+        Returns:
+            Suggestion string with recommended approach, or None
+        """
+        try:
+            # Search for relevant past successes
+            results = self.facts.query(
+                query_texts=[goal],
+                n_results=10,
+                where={"category": "action_outcome"} if self.facts.count() > 0 else None
+            )
+
+            if not results or not results['documents'] or not results['documents'][0]:
+                return None
+
+            # Filter for successes
+            successful_approaches = [
+                doc for doc in results['documents'][0]
+                if "succeeded" in doc.lower()
+            ]
+
+            if successful_approaches:
+                return f"Based on past experience, these approaches have worked: {'; '.join(successful_approaches[:3])}"
+
+            return None
+
+        except Exception as e:
+            print(f"Error getting best approach: {e}")
+            return None
+
     def clear_all(self) -> bool:
         """Clear all memories (use with caution!)."""
         try:

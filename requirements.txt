@@ -4,6 +4,7 @@
 # Core
 anthropic>=0.39.0
 openai>=1.0.0
+google-genai>=1.0.0  # Gemini 3 Flash + Live API
 
 # macOS Menubar App
 rumps>=0.4.0
@@ -13,6 +14,7 @@ pvporcupine>=3.0.0
 
 # Screen Capture & Computer Control
 pyautogui>=0.9.54
+pynput>=1.7.6  # Mouse/keyboard tracking for proactive vision
 pillow>=10.0.0
 pyobjc-core>=10.0
 pyobjc-framework-Cocoa>=10.0

@@ -7,37 +7,60 @@ Aria is a voice-first desktop assistant that integrates with Claude Code. This e
 1. **Voice Coding** - Say "Hey Aria, fix the bug in login.ts" and Claude Code executes it
 2. **Desktop Superpowers** - Claude Code can see your screen and control your computer
 3. **Shared Memory** - Both Aria and Claude Code share the same long-term memory
+4. **Gesture Control** - Hands-free confirmation via webcam gestures
 
 ## Quick Start
 
 ### Running Aria (Voice Assistant)
 ```bash
-cd /Users/adikol/Desktop/anthropic-quickstarts/aria-agent
+cd /Users/adikol/Desktop/aria-agent
 source venv/bin/activate
 python -m aria.main
 ```
 
+Or use the Launch command:
+```bash
+./Launch\ Aria.command
+```
+
 ### Connecting Claude Code to Aria
 
-The Aria MCP server is configured in `~/.mcp.json` (global) and `.mcp.json` (project).
+The Aria MCP server is configured in `.mcp.json` (project-level).
 
 When you start Claude Code, it will prompt you to enable the Aria MCP server.
 Select "Yes" to enable it.
 
-The configuration is already set up at:
-- Global: `~/.mcp.json`
-- Project: `/Users/adikol/Desktop/anthropic-quickstarts/aria-agent/.mcp.json`
-
+**Project MCP Configuration** (`.mcp.json`):
 ```json
 {
   "mcpServers": {
     "aria": {
-      "command": "python3",
-      "args": ["/Users/adikol/Desktop/anthropic-quickstarts/aria-agent/run_mcp_server.py"]
+      "command": "/Users/adikol/Desktop/aria-agent/venv/bin/python",
+      "args": ["/Users/adikol/Desktop/aria-agent/run_mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "/Users/adikol/Desktop/aria-agent"
+      }
     }
   }
 }
 ```
+
+## Voice Architecture
+
+Aria uses a **Hybrid Voice Architecture** for optimal performance:
+
+### OpenAI Realtime API (Primary - Fast)
+- **Latency**: ~230ms for voice I/O
+- **Used for**: Speech-to-text, text-to-speech, simple actions
+- **Config**: `REALTIME_VOICE_ENABLED=True` in `aria/config.py`
+
+### Claude Brain (Intelligence)
+- **Used for**: Complex reasoning, computer control, multi-step tasks
+- **Model**: Claude Opus 4.5 for complex tasks, Claude Haiku for fast responses
+
+### Traditional Mode (Fallback)
+- Sequential: Whisper STT → Claude → TTS
+- Higher latency but works without Realtime API
 
 ## Available MCP Tools
 
@@ -46,11 +69,12 @@ When connected, Claude Code gains these Aria capabilities:
 ### Screen & Vision
 - `capture_screen` - Get a screenshot of the current display
 - `get_active_app` - Get the name of the frontmost application
+- `get_mouse_position` - Get current mouse coordinates
 
 ### Computer Control
 - `click(x, y)` - Click at coordinates
 - `double_click(x, y)` - Double-click
-- `scroll(amount)` - Scroll up/down
+- `scroll(amount)` - Scroll up/down (positive=up, negative=down)
 - `type_text(text)` - Type text (uses clipboard for reliability)
 - `press_key(key)` - Press a key (enter, tab, escape, etc.)
 - `hotkey(keys)` - Keyboard shortcut (e.g., ["command", "c"])
@@ -69,133 +93,177 @@ When connected, Claude Code gains these Aria capabilities:
 - `list_skills()` - List all available Aria skills
 - `run_skill(skill_name, input)` - Execute a skill by name
 
-## Skills System
+### Ambient Intelligence
+- `get_briefing()` - Get status updates across all worlds
+- `list_worlds()` - List monitored domains
+- `create_world(name, description)` - Create a new monitoring domain
+- `add_entity(world_id, name, type)` - Track a person/company/topic
+- `add_goal(world_id, description)` - Add a goal to track
+- `get_insights()` - Get pending insights that need attention
 
-Aria has a flexible skills system for extending capabilities:
+## Gesture Recognition
 
-### Built-in Skills
-| Skill | Category | Description |
-|-------|----------|-------------|
-| `open_application` | system | Open apps by name |
-| `click_at_position` | system | Click at coordinates |
-| `type_text` | system | Type text |
-| `scroll_screen` | system | Scroll up/down |
-| `keyboard_shortcut` | system | Execute shortcuts |
-| `take_screenshot` | system | Capture screen |
-| `remember_fact` | memory | Store to memory |
-| `recall_memory` | memory | Search memory |
-| `open_url` | browser | Open URLs |
+Aria supports hands-free control via webcam gestures:
 
-### Creating User Skills
+| Gesture | Action |
+|---------|--------|
+| 👍 Thumbs up | Confirm |
+| 👎 Thumbs down | Cancel |
+| ✋ Open palm | Stop |
+| ✊ Closed fist | Pause |
+| ☝️ Pointing up | Select |
 
-Aria supports the [Anthropic Agent Skills](https://agentskills.io/specification) format.
-
-**Recommended: Folder format (official spec)**
-```
-~/.aria/skills/my-skill/
-├── SKILL.md          # Required - frontmatter + instructions
-├── scripts/          # Optional - executable code
-├── references/       # Optional - additional docs
-└── assets/           # Optional - static resources
+### Enabling Gestures
+```python
+from aria.agent import get_agent
+agent = get_agent()
+agent.enable_gestures()  # Requires camera permission
 ```
 
-**SKILL.md format:**
-```markdown
----
-name: my-skill
-description: What the skill does and when to use it. Include keywords.
----
+### Camera Permissions
+Gestures require camera access. Grant permission in:
+**System Settings → Privacy & Security → Camera → Terminal**
 
-# My Skill
-
-## Instructions
-[Your instructions here]
-
-## Examples
-- Example usage
+Or set environment variable to skip auth prompt:
+```bash
+export OPENCV_AVFOUNDATION_SKIP_AUTH=1
 ```
 
-**Legacy: Flat file format (still supported)**
-```markdown
----
-name: my-skill
-description: What the skill does
-triggers: ["keyword1", "keyword2"]
-category: custom
----
-# Skill Instructions
+## Performance Optimizations
 
-Your instructions here...
+### Lazy Loading (Critical for Fast Startup)
+
+Heavy modules are loaded lazily to ensure fast startup:
+
+1. **Gestures** (`aria/agent.py`):
+   - MediaPipe takes ~3 minutes to import first time
+   - Loaded only when `enable_gestures()` is called
+
+2. **Gemini Voice** (`aria/main.py`):
+   - Google SDK is slow to import
+   - Loaded only when Gemini voice mode is selected
+
+3. **MCP Server** (`aria/mcp_server.py`):
+   - All components use lazy initialization via `@property`
+   - Server starts in ~0.02 seconds
+
+### Configuration (`aria/config.py`)
+
+```python
+# Voice Mode - MUST be True for fast voice
+REALTIME_VOICE_ENABLED = True
+
+# Model Selection
+CLAUDE_MODEL = "claude-sonnet-4-20250514"  # Complex tasks
+CLAUDE_MODEL_FAST = "claude-haiku-3-5-20241022"  # Simple tasks
 ```
 
-See https://agentskills.io/specification for the full spec.
+## Troubleshooting
 
-### Skill Categories
-- `system` - Desktop control
-- `file` - File operations
-- `browser` - Web browsing
-- `memory` - Memory operations
-- `voice` - Voice/TTS
-- `workflow` - Multi-step procedures
-- `custom` - User-defined
+### Aria Won't Start / Hangs on Import
 
-### Hook System
+**Symptom**: Process starts but no menubar icon appears
 
-Configure hooks in `~/.aria/hooks.yaml`:
+**Causes & Fixes**:
+1. **Multiple processes running**: Kill all with `pkill -9 -f "aria"`
+2. **Import hanging**: Check if mediapipe/google SDK is loading (can take minutes first time)
+3. **SDK import error**: Run `python -c "import anthropic"` to test
 
-```yaml
-hooks:
-  session_start:
-    - name: inject-context
-      command: echo "Today is $(date)"
-  before_request:
-    - name: log-request
-      command: echo "$ARIA_USER_INPUT" >> ~/.aria/log.txt
-```
+### Voice Goes Silent / Stops Responding
 
-## Memory System
+**Symptom**: Aria stops responding after working for a while
 
-Memory is stored in `~/.aria/data/memory/` using ChromaDB. Both Aria and Claude Code share this memory.
+**Cause**: OpenAI Realtime API connection timeout
 
-### Memory Categories
-- `preference` - User preferences ("prefers dark mode")
-- `personal` - Personal info ("name is Adi")
-- `work` - Work-related ("works at Anthropic")
-- `habit` - Habits and patterns
-- `project` - Project-specific info
-- `other` - Everything else
+**Fixes**:
+1. Say "Hey Aria" or press ⌥ Space to reconnect
+2. Restart Aria: `pkill -9 -f "aria.main" && python -m aria.main`
 
-### Example Usage in Claude Code
-```
-User: Remember that I prefer TypeScript over JavaScript
-Claude: [Uses remember tool with fact="User prefers TypeScript over JavaScript", category="preference"]
+### MCP Server Won't Connect
 
-User: What do you know about my preferences?
-Claude: [Uses recall tool with query="preferences"]
-```
+**Symptom**: Claude Code shows "Failed to connect to aria"
 
-## Voice Coding Mode
+**Fixes**:
+1. Check path in `.mcp.json` points to correct location
+2. Ensure venv Python is used: `/Users/adikol/Desktop/aria-agent/venv/bin/python`
+3. Test manually: `python run_mcp_server.py`
 
-When you tell Aria something coding-related, it automatically delegates to Claude Code:
+### Camera Not Working for Gestures
 
-**Triggers:**
-- "fix bug", "write code", "implement", "refactor"
-- "edit file", "create file", "find file"
-- "commit", "push", "git"
-- "run tests", "build", "npm", "pip"
-- "in the codebase", "in the code"
+**Symptom**: "Failed to open camera for gesture recognition"
 
-**Examples:**
-- "Hey Aria, fix the TypeScript errors in the auth module"
-- "Hey Aria, add a loading spinner to the dashboard"
-- "Hey Aria, commit these changes with a good message"
+**Fixes**:
+1. Grant camera permission to Terminal in System Settings
+2. Or set: `export OPENCV_AVFOUNDATION_SKIP_AUTH=1`
+
+### Slow First Startup
+
+**Symptom**: First startup takes 30+ seconds
+
+**Cause**: Anthropic SDK cold start, MediaPipe model download
+
+**This is normal** - subsequent startups are fast due to lazy loading.
+
+## macOS Permissions Required
+
+Grant these in **System Settings → Privacy & Security**:
+
+| Permission | Purpose |
+|------------|---------|
+| **Microphone** | Voice input |
+| **Screen Recording** | Screen capture |
+| **Accessibility** | Computer control (mouse/keyboard) |
+| **Camera** | Gesture recognition (optional) |
+
+## Files
+
+### Core
+- `aria/main.py` - Menubar app entry point (lazy loads Gemini)
+- `aria/agent.py` - Core agent brain (lazy loads gestures)
+- `aria/memory.py` - ChromaDB long-term memory
+- `aria/mcp_server.py` - MCP server for Claude Code (lazy loading)
+- `aria/vision.py` - Screen capture
+- `aria/control.py` - Computer control (pyautogui)
+- `aria/voice.py` - Voice I/O (OpenAI Whisper + TTS)
+
+### Voice Systems
+- `aria/realtime_voice.py` - OpenAI Realtime API (fast, primary)
+- `aria/gemini_voice.py` - Google Gemini Live API (alternative)
+- `aria/hybrid_voice.py` - Hybrid voice routing
+
+### Intelligence (v2.0)
+- `aria/intent.py` - Intent understanding with memory
+- `aria/planner.py` - Task planning and decomposition
+- `aria/learning.py` - Learning from outcomes
+- `aria/clarification.py` - Smart question asking
+- `aria/gestures.py` - MediaPipe gesture recognition
+
+### Skills System
+- `aria/skills/` - Skills module
+- `aria/skills/base.py` - Skill and SkillResult classes
+- `aria/skills/registry.py` - @skill decorator and registry
+- `aria/skills/loader.py` - Loads markdown and Python skills
+
+### Computer Use
+- `aria/claude_computer_use.py` - Claude Computer Use agent
+- `aria/action_executor.py` - Vision-guided action execution
+
+### Entry Points
+- `run_mcp_server.py` - Script to run MCP server
+- `Launch Aria.command` - Double-click to start Aria
+
+### Ambient Intelligence (v3.0)
+- `aria/ambient/` - Ambient intelligence system
+- `aria/ambient/models.py` - Core data models
+- `aria/ambient/world_manager.py` - World CRUD
+- `aria/ambient/loop.py` - Main processing loop
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        User                                  │
-│              (Voice or Terminal)                            │
+│         (Voice / Gestures / Terminal)                       │
 └─────────────────────┬───────────────────────────────────────┘
                       │
         ┌─────────────┴─────────────┐
@@ -222,31 +290,66 @@ When you tell Aria something coding-related, it automatically delegates to Claud
    └─────────┘    └─────────┘    └─────────┘
 ```
 
-## Files
+## Voice Mode Selection
 
-### Core
-- `aria/main.py` - Menubar app entry point
-- `aria/agent.py` - Core agent brain (Claude API + actions)
-- `aria/memory.py` - ChromaDB long-term memory
-- `aria/claude_bridge.py` - Delegates to Claude Code CLI
-- `aria/mcp_server.py` - MCP server for Claude Code
-- `aria/vision.py` - Screen capture
-- `aria/control.py` - Computer control (pyautogui)
-- `aria/voice.py` - Voice I/O (OpenAI Whisper + TTS)
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Voice Input                               │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+                      ▼
+            ┌─────────────────┐
+            │ Mode Selection  │
+            └────────┬────────┘
+                     │
+    ┌────────────────┼────────────────┐
+    │                │                │
+    ▼                ▼                ▼
+┌────────┐    ┌────────────┐    ┌──────────┐
+│ Gemini │    │  Realtime  │    │Traditional│
+│  Live  │    │   (Fast)   │    │ (Fallback)│
+│  API   │    │  Primary   │    │           │
+└────────┘    └────────────┘    └──────────┘
+                     │
+                     ▼
+            ┌─────────────────┐
+            │  Claude Brain   │
+            │ (Complex Tasks) │
+            └─────────────────┘
+```
 
-### Intelligence (v2.0)
-- `aria/intent.py` - Intent understanding with memory
-- `aria/planner.py` - Task planning and decomposition
-- `aria/learning.py` - Learning from outcomes
-- `aria/clarification.py` - Smart question asking
+## Testing Checklist
 
-### Skills System
-- `aria/skills/` - Skills module
-- `aria/skills/base.py` - Skill and SkillResult classes
-- `aria/skills/registry.py` - @skill decorator and registry
-- `aria/skills/loader.py` - Loads markdown and Python skills
-- `aria/skills/hooks.py` - Session lifecycle hooks
-- `aria/skills/builtin/` - Built-in skills
+After making changes, verify:
 
-### Entry Points
-- `run_mcp_server.py` - Script to run MCP server
+- [ ] `python -m aria.main` starts and shows menubar icon
+- [ ] Voice responds to "Hey Aria" or ⌥ Space
+- [ ] MCP tools work: `capture_screen`, `open_app`, `speak`
+- [ ] Memory works: `remember`, `recall`
+- [ ] Gestures work (if camera available)
+
+## Known Issues
+
+1. **Realtime API Timeout**: Connection drops after ~5 min of silence. Say "Hey Aria" to reconnect.
+2. **MediaPipe First Load**: Takes ~3 minutes first time (model download).
+3. **Python 3.9 Warnings**: Google SDK shows deprecation warnings (safe to ignore).
+4. **ChatGPT Hotkey Conflict**: If ⌥ Space opens ChatGPT, disable its hotkey or use menubar/wake word.
+
+## Environment Variables
+
+```bash
+# Required
+ANTHROPIC_API_KEY=your_key
+OPENAI_API_KEY=your_key
+
+# Optional
+GOOGLE_API_KEY=your_key  # For Gemini voice
+REALTIME_VOICE_ENABLED=true  # Fast voice mode
+```
+
+## Version History
+
+- **v0.1**: Initial release with voice control
+- **v2.0**: Added intelligence layer (intent, planning, learning)
+- **v3.0**: Added ambient intelligence and gesture recognition
+- **Current**: Performance optimizations (lazy loading), stability fixes

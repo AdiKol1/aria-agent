@@ -1,8 +1,8 @@
 #!/bin/bash
 # Launch Aria - Double-click this file to start
 
-cd "$(dirname "$0")"
-source venv/bin/activate
+cd "/Users/adikol/Desktop/aria-agent"
+source "/Users/adikol/Desktop/anthropic-quickstarts/aria-agent/venv/bin/activate"
 
 echo "================================"
 echo "   Starting Aria Agent v0.1"

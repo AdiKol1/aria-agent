@@ -89,6 +89,16 @@ from .voice_bridge import (
     should_intercept_voice,
 )
 
+from .vision_context import (
+    VisionContext,
+    VisionAwareExecutor,
+    AmbientObserver,
+    ScreenState,
+    ActionContext,
+    get_vision_context,
+    get_ambient_observer,
+)
+
 __all__ = [
     # High-level API
     "AriaEngine",
@@ -119,4 +129,12 @@ __all__ = [
     "get_voice_bridge",
     "process_voice",
     "should_intercept_voice",
+    # Vision Context (Proactive Vision)
+    "VisionContext",
+    "VisionAwareExecutor",
+    "AmbientObserver",
+    "ScreenState",
+    "ActionContext",
+    "get_vision_context",
+    "get_ambient_observer",
 ]
