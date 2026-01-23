@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aria": {
+      "command": "/Users/adikol/Desktop/aria-agent/venv/bin/python",
+      "args": ["/Users/adikol/Desktop/aria-agent/run_mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "/Users/adikol/Desktop/aria-agent"
+      }
+    }
+  }
+}
