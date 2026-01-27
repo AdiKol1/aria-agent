@@ -4,7 +4,19 @@
 # Core
 anthropic>=0.39.0
 openai>=1.0.0
-google-genai>=1.0.0  # Gemini 3 Flash + Live API
+# google-genai - REMOVED in v2.0 (Moshi replaced Gemini Live)
+
+# =============================================================================
+# DAEMON MODE (v4.0)
+# =============================================================================
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+websockets>=12.0
+httpx>=0.26.0
+
+# Telegram Bridge
+python-telegram-bot>=21.0
 
 # macOS Menubar App
 rumps>=0.4.0
@@ -25,7 +37,7 @@ pyobjc-framework-ScreenCaptureKit>=10.0
 pyaudio>=0.2.14
 numpy>=1.24.0
 sounddevice>=0.4.6
-websockets>=12.0  # For OpenAI Realtime API
+# websockets - REMOVED in v2.0 (Moshi replaced OpenAI Realtime)
 
 # Gesture Recognition
 mediapipe>=0.10.0
@@ -43,18 +55,36 @@ pyperclip>=1.8.0
 # MCP Server uses built-in JSON-RPC (no external dependency needed)
 
 # =============================================================================
-# Qwen + Claude Hybrid Voice System (cost-effective alternative to OpenAI Realtime)
+# Voice System v2.0: Moshi + Claude
 # =============================================================================
+# Moshi MLX provides local full-duplex voice I/O on Apple Silicon
+# with 160-200ms latency, replacing the expensive OpenAI Realtime API
 
-# Qwen2.5-Omni model
-transformers>=4.45.0
-accelerate>=0.25.0
-bitsandbytes>=0.41.0  # For 4-bit quantization (saves memory)
+# Moshi for Apple Silicon (local voice I/O)
+moshi-mlx>=0.1.0  # pip install moshi-mlx OR pip install git+https://github.com/kyutai-labs/moshi.git#subdirectory=moshi_mlx
+mlx>=0.5.0  # Apple Silicon ML framework
+mlx-whisper>=0.1.0  # Local whisper for wake word detection
+
+# Audio processing
 soundfile>=0.12.0
 
-# MLX for Apple Silicon optimization (optional but recommended for M4)
-# mlx>=0.5.0
-# mlx-whisper>=0.1.0
-
-# HTTP client for Ollama fallback
+# HTTP client (for web search, etc.)
 requests>=2.31.0
+
+# =============================================================================
+# Voice System v3.0: Pipecat Pipeline
+# =============================================================================
+# Production-ready voice pipeline with:
+# - Deepgram STT (real-time streaming)
+# - ElevenLabs TTS (natural voice)
+# - Silero VAD (interruption handling)
+pipecat-ai[anthropic,deepgram,elevenlabs,silero,local]>=0.0.60
+
+# =============================================================================
+# REMOVED in v2.0 (Qwen Hybrid replaced by Moshi):
+# - transformers (Qwen model)
+# - accelerate (Qwen model)
+# - bitsandbytes (Qwen quantization)
+# - google-genai (Gemini Live API)
+# - websockets (OpenAI Realtime API)
+# =============================================================================

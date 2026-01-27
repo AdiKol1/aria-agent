@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aria.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/adikol/aria-agent/venv/bin/python</string>
+        <string>-m</string>
+        <string>aria.daemon</string>
+        <string>--foreground</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/adikol/aria-agent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/adikol/aria-agent/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/adikol/aria-agent</string>
+    </dict>
+
+    <!-- Start on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if it crashes (but not on clean exit) -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Log files -->
+    <key>StandardOutPath</key>
+    <string>/Users/adikol/.aria/daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/adikol/.aria/daemon.error.log</string>
+
+    <!-- Wait 10 seconds before restarting after crash -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Nice level (lower priority to not interfere with foreground apps) -->
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <!-- Process type for macOS resource management -->
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

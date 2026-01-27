@@ -13,8 +13,11 @@ Uses JSON-RPC 2.0 over stdio (compatible with Python 3.9+)
 
 import base64
 import json
+import logging
 import sys
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # LAZY IMPORTS - Heavy modules loaded on first use for fast MCP startup
 # This allows Claude Code to connect quickly without 15+ second delays
@@ -77,11 +80,27 @@ class AriaMCPServer:
 
     @property
     def voice(self):
+        """Lazy load voice interface, preferring Pipecat (v3.0)."""
         if self._voice is None:
             try:
+                # Try Pipecat first (v3.0)
+                from .pipecat_voice import get_pipecat_client, PIPECAT_AVAILABLE
+                from .config import PIPECAT_ENABLED
+                logger.debug(f"[Voice] PIPECAT_AVAILABLE={PIPECAT_AVAILABLE}, PIPECAT_ENABLED={PIPECAT_ENABLED}")
+                if PIPECAT_AVAILABLE and PIPECAT_ENABLED:
+                    self._voice = get_pipecat_client()
+                    logger.info(f"[Voice] Using Pipecat client: {self._voice}")
+                    return self._voice
+            except Exception as e:
+                logger.warning(f"[Voice] Pipecat failed: {e}")
+
+            # Fallback to local voice
+            try:
                 from .voice import get_voice
-                self._voice = get_voice()
-            except:
+                self._voice = get_voice(use_local=True)
+                logger.info(f"[Voice] Using local voice fallback: {self._voice}")
+            except Exception as e:
+                logger.error(f"[Voice] Local voice failed: {e}")
                 self._voice = False  # Mark as unavailable
         return self._voice if self._voice else None
 
@@ -130,7 +149,38 @@ class AriaMCPServer:
         if self._ambient is None:
             from .ambient import get_ambient_system
             self._ambient = get_ambient_system()
+            # Auto-start ambient loop if not already running
+            if not self._ambient.is_running:
+                self._start_ambient_loop()
         return self._ambient
+
+    def _start_ambient_loop(self):
+        """Start the ambient loop in a background thread."""
+        import asyncio
+        import threading
+        import time
+
+        def run_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._ambient.start())
+                loop.run_forever()
+            except Exception as e:
+                sys.stderr.write(f"[MCP] Ambient loop error: {e}\n")
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=run_loop, daemon=True)
+        thread.start()
+
+        # Wait for startup (up to 2 seconds)
+        for _ in range(20):
+            if self._ambient.is_running:
+                sys.stderr.write("[MCP] Ambient system started\n")
+                return
+            time.sleep(0.1)
+        sys.stderr.write("[MCP] Warning: Ambient system may not have started\n")
 
     @property
     def skill_recorder(self):
@@ -501,6 +551,60 @@ class AriaMCPServer:
                 }
             },
 
+            # News feeds
+            {
+                "name": "add_news_feed",
+                "description": "Add an RSS feed URL to monitor for news articles. Feeds persist across restarts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "RSS feed URL to add"},
+                        "name": {"type": "string", "description": "Optional friendly name for the feed"}
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
+                "name": "list_news_feeds",
+                "description": "List all configured RSS news feeds.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+
+            # World management
+            {
+                "name": "update_world",
+                "description": "Update an existing world's name, description, or keywords.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "world_id": {"type": "string", "description": "ID of the world to update"},
+                        "name": {"type": "string", "description": "New name (optional)"},
+                        "description": {"type": "string", "description": "New description (optional)"},
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "New keywords list (replaces existing)"
+                        }
+                    },
+                    "required": ["world_id"]
+                }
+            },
+
+            # System control
+            {
+                "name": "start_ambient",
+                "description": "Manually start the ambient intelligence system if not running.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+
             # =================================================================
             # LEARNING SYSTEM - Skill Recording, Patterns, and Memory Pruning
             # =================================================================
@@ -708,6 +812,133 @@ class AriaMCPServer:
                     "required": []
                 }
             },
+
+            # =================================================================
+            # DAEMON & SCHEDULING (v4.0)
+            # =================================================================
+            {
+                "name": "daemon_status",
+                "description": "Check if the Aria daemon is running and get its status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "schedule_briefing",
+                "description": "Schedule automatic briefings. Examples: 'brief me every morning at 8am'",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "time": {"type": "string", "description": "Time in HH:MM format (e.g., '08:00')"},
+                        "type": {"type": "string", "enum": ["morning", "evening"], "default": "morning"},
+                        "days": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Days of week (0=Mon, 6=Sun). Default: weekdays"
+                        }
+                    },
+                    "required": ["time"]
+                }
+            },
+            {
+                "name": "schedule_reminder",
+                "description": "Schedule a reminder notification.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Reminder title"},
+                        "body": {"type": "string", "description": "Reminder message"},
+                        "at": {"type": "string", "description": "Time or datetime (e.g., '14:00' or '2026-01-26T14:00')"},
+                        "repeat": {"type": "string", "enum": ["once", "daily", "weekly"], "default": "once"}
+                    },
+                    "required": ["title", "body", "at"]
+                }
+            },
+            {
+                "name": "list_scheduled_tasks",
+                "description": "List all scheduled tasks (briefings, reminders, research).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "cancel_scheduled_task",
+                "description": "Cancel a scheduled task by ID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the task to cancel"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+
+            # =================================================================
+            # PUSH NOTIFICATIONS (v4.0)
+            # =================================================================
+            {
+                "name": "configure_notifications",
+                "description": "Configure push notifications via ntfy.sh. First time setup required.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string", "description": "ntfy.sh topic (unique identifier)"},
+                        "server_url": {"type": "string", "description": "ntfy server URL (default: https://ntfy.sh)"},
+                        "test": {"type": "boolean", "default": True, "description": "Send test notification"}
+                    },
+                    "required": ["topic"]
+                }
+            },
+            {
+                "name": "send_notification",
+                "description": "Send a push notification to user's devices.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Notification title"},
+                        "body": {"type": "string", "description": "Notification body"},
+                        "priority": {"type": "string", "enum": ["min", "low", "default", "high", "urgent"], "default": "default"}
+                    },
+                    "required": ["title", "body"]
+                }
+            },
+            {
+                "name": "notification_status",
+                "description": "Get notification configuration status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+
+            # =================================================================
+            # TELEGRAM BRIDGE (v4.0)
+            # =================================================================
+            {
+                "name": "configure_telegram",
+                "description": "Configure Telegram bridge for messaging access to Aria.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bot_token": {"type": "string", "description": "Telegram bot token from @BotFather"}
+                    },
+                    "required": ["bot_token"]
+                }
+            },
+            {
+                "name": "telegram_status",
+                "description": "Get Telegram bridge status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
         ]
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -872,13 +1103,24 @@ class AriaMCPServer:
 
             # Voice
             elif name == "speak":
-                if self.voice:
-                    success = self.voice.speak(arguments["text"])
-                    return {"content": [{"type": "text", "text": f"Spoke: {'success' if success else 'failed'}"}]}
+                logger.info(f"[Speak] Attempting to speak: {arguments['text'][:50]}...")
+                voice = self.voice
+                logger.info(f"[Speak] Voice object: {voice}")
+                if voice:
+                    try:
+                        success = voice.speak(arguments["text"])
+                        logger.info(f"[Speak] Result: {success}")
+                        return {"content": [{"type": "text", "text": f"Spoke: {'success' if success else 'failed'}"}]}
+                    except Exception as e:
+                        logger.error(f"[Speak] Error: {e}")
+                        return {"content": [{"type": "text", "text": f"Speak error: {e}"}]}
+                logger.warning("[Speak] Voice not available")
                 return {"content": [{"type": "text", "text": "Voice not available"}]}
 
             # Skills
             elif name == "list_skills":
+                # Ensure skills are loaded from disk
+                _ = self.skill_loader
                 skills = self.skill_registry.all()
                 if skills:
                     lines = [f"Available skills ({len(skills)}):"]
@@ -897,6 +1139,8 @@ class AriaMCPServer:
                 skill_name = arguments["skill_name"]
                 user_input = arguments["input"]
 
+                # Ensure skills are loaded from disk
+                _ = self.skill_loader
                 skill = self.skill_registry.get(skill_name)
                 if not skill:
                     return {"content": [{"type": "text", "text": f"Skill not found: {skill_name}"}]}
@@ -1011,6 +1255,62 @@ class AriaMCPServer:
                     arguments.get("context", "")
                 )
                 return {"content": [{"type": "text", "text": result}]}
+
+            # News feeds
+            elif name == "add_news_feed":
+                url = arguments["url"]
+                name_hint = arguments.get("name", "")
+                # Get news watcher from ambient system
+                news_watcher = self.ambient.get_watcher("news")
+                if news_watcher:
+                    added = news_watcher.add_feed(url)
+                    if added:
+                        return {"content": [{"type": "text", "text": f"Added RSS feed: {url}"}]}
+                    return {"content": [{"type": "text", "text": f"Feed already exists: {url}"}]}
+                return {"content": [{"type": "text", "text": "News watcher not available"}]}
+
+            elif name == "list_news_feeds":
+                news_watcher = self.ambient.get_watcher("news")
+                if news_watcher:
+                    feeds = news_watcher.list_feeds()
+                    if feeds:
+                        lines = [f"Configured RSS feeds ({len(feeds)}):"]
+                        for i, feed in enumerate(feeds, 1):
+                            lines.append(f"  {i}. {feed}")
+                        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                    return {"content": [{"type": "text", "text": "No RSS feeds configured. Use add_news_feed to add one."}]}
+                return {"content": [{"type": "text", "text": "News watcher not available"}]}
+
+            # World management
+            elif name == "update_world":
+                world_id = arguments["world_id"]
+                world = self.ambient.get_world(world_id)
+                if not world:
+                    return {"content": [{"type": "text", "text": f"World not found: {world_id}"}]}
+
+                # Update fields if provided
+                updated = []
+                if "name" in arguments and arguments["name"]:
+                    world.name = arguments["name"]
+                    updated.append("name")
+                if "description" in arguments and arguments["description"]:
+                    world.description = arguments["description"]
+                    updated.append("description")
+                if "keywords" in arguments:
+                    world.keywords = arguments["keywords"]
+                    updated.append("keywords")
+
+                if updated:
+                    self.ambient.save_world(world)
+                    return {"content": [{"type": "text", "text": f"Updated world '{world.name}': {', '.join(updated)}"}]}
+                return {"content": [{"type": "text", "text": "No changes made - provide name, description, or keywords to update"}]}
+
+            # System control
+            elif name == "start_ambient":
+                if self.ambient.is_running:
+                    return {"content": [{"type": "text", "text": "Ambient system is already running"}]}
+                self._start_ambient_loop()
+                return {"content": [{"type": "text", "text": f"Ambient system started: {self.ambient.is_running}"}]}
 
             # =================================================================
             # LEARNING SYSTEM HANDLERS
@@ -1199,6 +1499,165 @@ class AriaMCPServer:
                     "Memory Pruning:",
                     f"  Archived memories: {prune_stats['total_archived']}",
                     f"  Flagged contradictions: {prune_stats['flagged_contradictions']}",
+                ]
+                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+            # =================================================================
+            # DAEMON & SCHEDULING HANDLERS (v4.0)
+            # =================================================================
+
+            elif name == "daemon_status":
+                from .daemon import is_daemon_running, get_daemon, DAEMON_PORT
+                if is_daemon_running():
+                    daemon = get_daemon()
+                    status = daemon.get_status()
+                    lines = [
+                        "Aria Daemon Status:",
+                        f"  Running: Yes",
+                        f"  PID: {status['pid']}",
+                        f"  Port: {status['port']}",
+                        f"  API: http://127.0.0.1:{status['port']}/api/v1",
+                        f"  Ambient: {'Running' if status['ambient_running'] else 'Stopped'}",
+                        f"  Scheduler: {'Running' if status['scheduler_running'] else 'Stopped'}",
+                        f"  Telegram: {'Running' if status.get('telegram_running') else 'Not configured'}",
+                    ]
+                    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                else:
+                    return {"content": [{"type": "text", "text": f"Aria daemon is not running.\n\nStart with: python -m aria.daemon\nOr install as service: ./install_daemon.sh"}]}
+
+            elif name == "schedule_briefing":
+                from .scheduler import get_scheduler
+                scheduler = get_scheduler()
+
+                time = arguments["time"]
+                briefing_type = arguments.get("type", "morning")
+                days = arguments.get("days", [0, 1, 2, 3, 4])  # Weekdays
+
+                task_id = scheduler.add_task(
+                    task_type="briefing",
+                    schedule=time,
+                    payload={
+                        "title": f"{briefing_type.title()} Briefing",
+                        "format": "text"
+                    },
+                    frequency="daily",
+                    days_of_week=days
+                )
+                return {"content": [{"type": "text", "text": f"Scheduled {briefing_type} briefing at {time}. Task ID: {task_id}"}]}
+
+            elif name == "schedule_reminder":
+                from .scheduler import schedule_reminder as sched_reminder
+
+                task_id = sched_reminder(
+                    title=arguments["title"],
+                    body=arguments["body"],
+                    at=arguments["at"],
+                    repeat=arguments.get("repeat", "once")
+                )
+                return {"content": [{"type": "text", "text": f"Reminder scheduled. Task ID: {task_id}"}]}
+
+            elif name == "list_scheduled_tasks":
+                from .scheduler import get_scheduler
+                scheduler = get_scheduler()
+                tasks = scheduler.list_tasks()
+
+                if tasks:
+                    lines = [f"Scheduled tasks ({len(tasks)}):"]
+                    for t in tasks:
+                        status = "enabled" if t["enabled"] else "disabled"
+                        lines.append(f"- [{t['id']}] {t['task_type']} at {t['schedule']} ({status})")
+                        if t.get("next_run"):
+                            lines.append(f"  Next: {t['next_run'][:16]}")
+                    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return {"content": [{"type": "text", "text": "No scheduled tasks."}]}
+
+            elif name == "cancel_scheduled_task":
+                from .scheduler import get_scheduler
+                scheduler = get_scheduler()
+
+                success = scheduler.remove_task(arguments["task_id"])
+                if success:
+                    return {"content": [{"type": "text", "text": f"Cancelled task {arguments['task_id']}"}]}
+                return {"content": [{"type": "text", "text": f"Task not found: {arguments['task_id']}"}]}
+
+            # =================================================================
+            # PUSH NOTIFICATION HANDLERS (v4.0)
+            # =================================================================
+
+            elif name == "configure_notifications":
+                from .notifications import get_notifier
+                import asyncio
+
+                notifier = get_notifier()
+                notifier.configure(
+                    topic=arguments["topic"],
+                    server_url=arguments.get("server_url", "https://ntfy.sh")
+                )
+
+                if arguments.get("test", True):
+                    try:
+                        loop = asyncio.new_event_loop()
+                        success = loop.run_until_complete(notifier.send(
+                            title="Aria Notifications Configured",
+                            body="You'll receive notifications here from now on!",
+                            priority="default"
+                        ))
+                        loop.close()
+                        return {"content": [{"type": "text", "text": f"Notifications configured. Test sent: {'success' if success else 'failed'}"}]}
+                    except Exception as e:
+                        return {"content": [{"type": "text", "text": f"Notifications configured. Test failed: {e}"}]}
+                return {"content": [{"type": "text", "text": "Notifications configured."}]}
+
+            elif name == "send_notification":
+                from .notifications import get_notifier
+                import asyncio
+
+                notifier = get_notifier()
+                try:
+                    loop = asyncio.new_event_loop()
+                    success = loop.run_until_complete(notifier.send(
+                        title=arguments["title"],
+                        body=arguments["body"],
+                        priority=arguments.get("priority", "default")
+                    ))
+                    loop.close()
+                    return {"content": [{"type": "text", "text": f"Notification {'sent' if success else 'failed'}"}]}
+                except Exception as e:
+                    return {"content": [{"type": "text", "text": f"Notification failed: {e}"}]}
+
+            elif name == "notification_status":
+                from .notifications import get_notifier
+                notifier = get_notifier()
+                status = notifier.get_status()
+                lines = [
+                    "Notification Status:",
+                    f"  Configured: {status['configured']}",
+                    f"  Server: {status['server_url']}",
+                    f"  Topic: {status['topic']}",
+                    f"  Sent count: {status['sent_count']}",
+                    f"  Last sent: {status['last_sent'] or 'Never'}",
+                ]
+                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+            # =================================================================
+            # TELEGRAM BRIDGE HANDLERS (v4.0)
+            # =================================================================
+
+            elif name == "configure_telegram":
+                from .bridges import get_telegram_bridge
+                bridge = get_telegram_bridge()
+                bridge.configure(bot_token=arguments["bot_token"])
+                return {"content": [{"type": "text", "text": "Telegram bridge configured. Start the daemon to activate."}]}
+
+            elif name == "telegram_status":
+                from .bridges import get_telegram_bridge
+                bridge = get_telegram_bridge()
+                status = bridge.get_status()
+                lines = [
+                    "Telegram Bridge Status:",
+                    f"  Running: {status['running']}",
+                    f"  Configured: {status['configured']}",
+                    f"  Authorized users: {status['authorized_users']}",
                 ]
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 

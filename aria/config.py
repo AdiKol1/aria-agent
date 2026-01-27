@@ -26,6 +26,32 @@ MEMORY_DB_PATH = ARIA_HOME / "memory.db"
 SCREENSHOTS_PATH = ARIA_HOME / "screenshots"
 SCREENSHOTS_PATH.mkdir(exist_ok=True)
 
+# =============================================================================
+# DAEMON CONFIGURATION (v4.0)
+# =============================================================================
+# Aria can run as a background daemon with REST API access
+
+DAEMON_PORT = int(os.getenv("ARIA_DAEMON_PORT", "8420"))
+DAEMON_HOST = os.getenv("ARIA_DAEMON_HOST", "127.0.0.1")
+DAEMON_AUTO_START = os.getenv("ARIA_DAEMON_AUTO_START", "false").lower() == "true"
+
+# =============================================================================
+# PUSH NOTIFICATIONS (v4.0)
+# =============================================================================
+# Uses ntfy.sh for cross-platform push notifications
+
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")  # User must configure their own topic
+NTFY_TOKEN = os.getenv("NTFY_TOKEN", "")  # Optional: for authenticated topics
+
+# =============================================================================
+# TELEGRAM BRIDGE (v4.0)
+# =============================================================================
+# Access Aria from Telegram messaging
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN)
+
 # Wake Word
 WAKE_WORD = "aria"  # Just say "Aria" to activate
 
@@ -49,32 +75,70 @@ VOICE_CHANNELS = 1
 VOICE_SILENCE_DURATION = 0.5  # Shorter silence detection (was 0.7)
 VOICE_MIN_AUDIO_LENGTH = 0.3  # Minimum audio length in seconds
 
-# Gemini Live API (DISABLED - Using Claude Opus 4.5 for maximum intelligence)
-# Note: Gemini voice mode uses Gemini's brain instead of Claude
-# We want Claude Opus 4.5 as the brain for complex reasoning and computer use
-GEMINI_VOICE_ENABLED = False  # Disabled to use Claude Opus 4.5 brain
-GEMINI_VOICE_MODEL = "gemini-2.0-flash-exp"  # Reverting to working model
-GEMINI_VOICE_VOICE = "Kore"  # Options: Puck, Charon, Kore, Fenrir, Aoede (Kore/Aoede are female)
-GEMINI_SAMPLE_RATE = 16000  # Gemini Live requires 16kHz input
-GEMINI_OUTPUT_SAMPLE_RATE = 24000  # Higher quality output
+# =============================================================================
+# VOICE SYSTEM v2.0: Moshi + Claude
+# =============================================================================
+# Moshi: Local voice I/O on Apple Silicon (160-200ms latency, free)
+# Claude: Complex reasoning and computer control
+# Local: Instant execution for simple commands (~50ms)
 
-# FALLBACK SYSTEM CONFIGURATION
-# IMMEDIATE fallback: Triggers on action keywords during speech - CAUSES GARBAGE, keep disabled
-# END-OF-TURN fallback: Triggers when Gemini claims action without tool call - useful
-DISABLE_IMMEDIATE_FALLBACK = True   # Disable: triggers on partial speech, causes garbage
-DISABLE_CONFABULATION_FALLBACK = False  # Enable: catches when Gemini lies about doing actions
+MOSHI_ENABLED = False  # v2.0 - disabled, using Pipecat v3.0 instead
+MOSHI_MODEL = "kyutai/moshiko-mlx-q4"  # Quantized for Apple Silicon
+MOSHI_SAMPLE_RATE = 24000
+MOSHI_FRAME_SIZE_MS = 80
 
-# Legacy flag (for backwards compatibility) - prefer the specific flags above
-DISABLE_FALLBACK_SYSTEM = True  # Kept for any code still using it
+# =============================================================================
+# VOICE SYSTEM v3.0: Pipecat (Deepgram + Claude + ElevenLabs)
+# =============================================================================
+# Production-ready voice pipeline with:
+# - Deepgram STT: Real-time streaming transcription (~200ms)
+# - Claude: Reasoning and tool execution
+# - ElevenLabs: Natural voice synthesis
+# - Silero VAD: Voice activity detection + interruption handling
 
-# OpenAI Realtime API - Fast voice I/O with tool routing
-# Uses GPT-4o for fast STT/TTS and simple actions (open app, click, type)
-# Complex tasks can be routed to Claude via execute_task tool
-REALTIME_VOICE_ENABLED = False  # Disabled - using HYBRID_VOICE instead (Qwen+Claude, 98% cheaper)
-REALTIME_VOICE_MODEL = "gpt-4o-realtime-preview-2024-12-17"
-REALTIME_VOICE_VOICE = "alloy"  # Options: alloy, echo, fable, onyx, nova, shimmer
-REALTIME_VAD_THRESHOLD = 0.5  # Voice activity detection threshold (0.0 to 1.0)
-REALTIME_SILENCE_DURATION_MS = 500  # Duration of silence to detect end of speech
+PIPECAT_ENABLED = True  # v3.0 uses Pipecat pipeline
+PIPECAT_FALLBACK_TO_LOCAL = True  # Fall back to traditional voice if Pipecat fails
+
+# Deepgram STT Configuration
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+DEEPGRAM_MODEL = "nova-2"  # Best accuracy/speed balance
+DEEPGRAM_LANGUAGE = "en-US"
+
+# ElevenLabs TTS Configuration
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel - natural female voice
+ELEVENLABS_MODEL = "eleven_turbo_v2_5"  # Low latency model
+
+# VAD Configuration (Voice Activity Detection)
+PIPECAT_VAD_STOP_SECS = 1.0  # Silence duration before end-of-turn (increased to prevent cutting off)
+PIPECAT_ENABLE_INTERRUPTIONS = False  # Disabled to prevent echo feedback loop
+
+# Pipeline Settings
+PIPECAT_SAMPLE_RATE = 16000  # Deepgram optimal rate
+
+# ========== DEPRECATED: Old Voice Systems (removed in v2.0) ==========
+# These settings are kept for backwards compatibility but are not used.
+# The old Gemini Live, OpenAI Realtime, and Qwen Hybrid systems have been
+# replaced by Moshi + Claude architecture for better latency and cost.
+
+# Gemini Live (REMOVED in v2.0)
+GEMINI_VOICE_ENABLED = False  # Deprecated - use Moshi
+GEMINI_VOICE_MODEL = ""
+GEMINI_VOICE_VOICE = ""
+GEMINI_SAMPLE_RATE = 16000
+GEMINI_OUTPUT_SAMPLE_RATE = 24000
+
+# Fallback system (REMOVED in v2.0)
+DISABLE_IMMEDIATE_FALLBACK = True
+DISABLE_CONFABULATION_FALLBACK = False
+DISABLE_FALLBACK_SYSTEM = True
+
+# OpenAI Realtime API (REMOVED in v2.0 - was $0.30/min, now free with Moshi)
+REALTIME_VOICE_ENABLED = False  # Deprecated - use Moshi
+REALTIME_VOICE_MODEL = ""
+REALTIME_VOICE_VOICE = ""
+REALTIME_VAD_THRESHOLD = 0.5
+REALTIME_SILENCE_DURATION_MS = 500
 
 # Claude Models
 CLAUDE_MODEL = "claude-opus-4-5-20251101"  # Opus 4.5 - Maximum intelligence for complex tasks
@@ -116,18 +180,13 @@ MCP_SERVERS = {
 MCP_AUTO_START = False  # Whether to start MCP servers automatically on init
 MCP_TIMEOUT_SECONDS = 30  # Timeout for MCP server operations
 
-# =============================================================================
-# Qwen + Claude Hybrid Voice System (cost-effective alternative)
-# =============================================================================
-# This system uses local Qwen Omni for voice I/O and routes to Claude for complex tasks
-# Cost: ~$0 for simple commands, ~$0.01-0.05 for complex reasoning
-# vs OpenAI Realtime: ~$0.30/min
-
-HYBRID_VOICE_ENABLED = True  # Using Qwen+Claude instead of OpenAI Realtime (98% cost savings)
-HYBRID_QWEN_MODEL = "Qwen/Qwen2.5-Omni-7B"
-HYBRID_QWEN_QUANTIZATION = "4bit"  # 4bit, 8bit, or none
-HYBRID_USE_LOCAL_FOR_SIMPLE = True  # Route simple commands to local execution
-HYBRID_OLLAMA_MODEL = "qwen2.5:7b"  # Fallback model if Qwen Omni fails to load
+# Qwen Hybrid (REMOVED in v2.0 - Replaced by Moshi + Claude)
+# The Qwen model cache was deleted to free space for Moshi.
+HYBRID_VOICE_ENABLED = False  # Deprecated - use Moshi
+HYBRID_QWEN_MODEL = ""  # Model deleted
+HYBRID_QWEN_QUANTIZATION = ""
+HYBRID_USE_LOCAL_FOR_SIMPLE = True  # Still used by Moshi's TaskRouter
+HYBRID_OLLAMA_MODEL = ""  # Deprecated
 
 # Validate required keys
 def validate_config():
